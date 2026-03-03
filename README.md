@@ -16,7 +16,7 @@ Anyway.
 
 Now it's open source.
 
-If you want to talk instead of type — this is for you.
+If you want to talk instead of type, this is for you.
 
 ---
 
@@ -36,7 +36,7 @@ It runs:
 - **A real-time DSP chain** (noise gate + compressor)
 - **A C++ desktop UI** (Dear ImGui + DirectX 11)
 
-Then it types the result straight into your active window using `SendInput` — direct keystroke injection, no clipboard nonsense.
+Then it types the result straight into your active window using `SendInput`. Direct keystroke injection, no clipboard nonsense.
 
 You press a key.
 You talk.
@@ -54,7 +54,7 @@ Four modes control how your speech gets processed:
 
 | Mode | What You Get |
 |------|-------------|
-| **Raw** | Exactly what Whisper hears — no cleanup |
+| **Raw** | Exactly what Whisper hears, no cleanup |
 | **Clean** | Grammar fixed, filler words removed. The default. |
 | **Prompt** | Your rambling restructured into clear LLM prompts |
 | **Dev** | Speech converted into numbered tasks and checklists |
@@ -106,12 +106,12 @@ Classic.
 <p align="center">
   <img src="docs/screenshots/murmur-ui.png" alt="Murmur UI" width="800">
   <br>
-  <em>The Murmur desktop UI — DSP controls, spectrum analyzer, latency breakdown, and engine status.</em>
+  <em>The Murmur desktop UI. DSP controls, spectrum analyzer, latency breakdown, engine status.</em>
 </p>
 
 ### 🎙 Voice → Text (Whisper large-v3)
 
-Runs locally on your GPU using [faster-whisper](https://github.com/SYSTRAN/faster-whisper). CUDA, float16, anti-repetition params, Silero VAD — the works.
+Runs locally on your GPU using [faster-whisper](https://github.com/SYSTRAN/faster-whisper). CUDA, float16, anti-repetition params, Silero VAD. The whole stack.
 
 You speak normally.
 It segments on silence (configurable threshold + timeout).
@@ -127,7 +127,7 @@ Because raw dictation sounds like this:
 
 And that's not how you want your messages or prompts to look.
 
-Four modes — each with its own system prompt, temperature, and token limit:
+Four modes, each with its own system prompt, temperature, and token limit:
 
 | Mode | LLM | What it does |
 |------|-----|-------------|
@@ -138,7 +138,7 @@ Four modes — each with its own system prompt, temperature, and token limit:
 
 Cleanup runs through a local LLM via [LM Studio](https://lmstudio.ai) at `localhost:1234`. If LM Studio is down, it falls back to raw text silently. No crash, no hang.
 
-Switch modes whenever you want — UI, tray menu, or API.
+Switch modes whenever you want. UI, tray menu, or API.
 
 ### 🎚 Real-Time DSP (Because Noise Is Annoying)
 
@@ -155,11 +155,11 @@ Did I build it anyway?
 Yes.
 
 **The noise gate:**
-- Uses hysteresis (separate open/close thresholds — no chattering)
+- Uses hysteresis (separate open/close thresholds so it doesn't chatter)
 - Has attack / release / hold time constants
 - Auto-calibrates to your room (stay silent 1.5s, it figures out the thresholds)
-- Doesn't hard-mute — it attenuates smoothly to a configurable floor (preserves room tone)
-- Vectorized gain ramp — no Python loops in the audio path
+- Doesn't hard-mute. It attenuates smoothly to a configurable floor (preserves room tone)
+- Vectorized gain ramp, no Python loops in the audio path
 
 **The compressor:**
 - Feed-forward, RMS-based envelope
@@ -195,7 +195,7 @@ The UI gives you:
 - Mode/profile switching
 - Mic selection + hotkey configuration
 - Approval mode (review text before it's typed)
-- Latency breakdown — Record, Transcribe, Cleanup, Type, plus Generation (processing-only) and Total
+- Latency breakdown: Record, Transcribe, Cleanup, Type, plus Generation (processing-only) and Total
 - Push-to-talk toggle
 
 ### 🎯 Profiles + Auto-Detect
@@ -211,7 +211,7 @@ It just adapts. Five profiles out of the box:
 | Profile | Mode | Notes |
 |---------|------|-------|
 | **Default** | Clean | General use |
-| **Terminal** | Raw | No LLM — shell commands need exact text |
+| **Terminal** | Raw | No LLM, shell commands need exact text |
 | **LM Studio** | Prompt | "Send" triggers Ctrl+Enter |
 | **VS Code** | Dev | Structured task output |
 | **Meeting** | Clean | Note-taking during calls |
@@ -229,14 +229,14 @@ Say "command" followed by a phrase:
 | "command clear" | Select All + Delete |
 | "command stop dictation" | Stops recording |
 
-Without the prefix, phrases are typed as regular text. Saying "new line" by itself just types "new line." The prefix is configurable in `config.json` — set `command_prefix` to `""` to disable it.
+Without the prefix, phrases are typed as regular text. Saying "new line" by itself just types "new line." The prefix is configurable in `config.json`. Set `command_prefix` to `""` to disable it.
 
 ### ✅ Approval Mode
 
 When enabled, text is held for review instead of being typed immediately. You can:
-- **Approve** — type it as-is
-- **Edit** — modify in a text box, then send
-- **Reject** — discard and keep listening
+- **Approve** to type it as-is
+- **Edit** to modify in a text box, then send
+- **Reject** to discard and keep listening
 
 ### 🎤 Push-to-Talk
 
@@ -268,16 +268,16 @@ It's a tool I built for myself that turned into something useful.
 
 ## The Stack (Because You'll Ask)
 
-- **Python 3.11+** — engine, audio pipeline, Whisper, LLM client
-- **faster-whisper** — Whisper large-v3 on CUDA, float16
-- **LM Studio** — local LLM for cleanup (optional)
-- **FastAPI + uvicorn** — HTTP API between engine and UI
-- **sounddevice / PortAudio** — WASAPI audio capture at 48kHz
-- **numpy / scipy** — DSP processing, resampling (48kHz → 16kHz)
-- **Dear ImGui + DirectX 11** — C++ desktop UI
-- **cpp-httplib** — HTTP client in the UI
-- **keyboard** — SendInput-based keystroke injection (KEYEVENTF_UNICODE)
-- **pystray** — system tray icon (when running from source)
+- **Python 3.11+**: engine, audio pipeline, Whisper, LLM client
+- **faster-whisper**: Whisper large-v3 on CUDA, float16
+- **LM Studio**: local LLM for cleanup (optional)
+- **FastAPI + uvicorn**: HTTP API between engine and UI
+- **sounddevice / PortAudio**: WASAPI audio capture at 48kHz
+- **numpy / scipy**: DSP processing, resampling (48kHz to 16kHz)
+- **Dear ImGui + DirectX 11**: C++ desktop UI
+- **cpp-httplib**: HTTP client in the UI
+- **keyboard**: SendInput-based keystroke injection (KEYEVENTF_UNICODE)
+- **pystray**: system tray icon (when running from source)
 
 Yes, it's a hybrid.
 Yes, it's slightly ridiculous.
@@ -288,13 +288,13 @@ Yes, it works.
 ## Requirements
 
 ### Hardware
-- **GPU**: NVIDIA with CUDA support (tested on RTX 4090 — any modern NVIDIA GPU with 4GB+ VRAM should work)
+- **GPU**: NVIDIA with CUDA support (tested on RTX 4090, any modern NVIDIA GPU with 4GB+ VRAM should work)
 - **Mic**: Any Windows-compatible audio input
 - **OS**: Windows 10/11
 
 ### Software
-- **LM Studio** at localhost:1234 with a model loaded (for Clean/Prompt/Dev modes — Raw mode works without it)
-- **Python 3.11+** with venv (for running from source — `Murmur.exe` bundles everything)
+- **LM Studio** at localhost:1234 with a model loaded (for Clean/Prompt/Dev modes, Raw mode works without it)
+- **Python 3.11+** with venv (for running from source, `Murmur.exe` bundles everything)
 
 ### Recommended LM Studio Models
 
@@ -404,7 +404,7 @@ cmake --build build/release --config Release
 
 ## HTTP API
 
-The engine exposes a REST API on `127.0.0.1:8899` (when run with `--server`). 20+ endpoints for full external control — recording, modes, profiles, DSP calibration, config, approval workflow, diagnostics. CORS enabled.
+The engine exposes a REST API on `127.0.0.1:8899` (when run with `--server`). 20+ endpoints for full external control: recording, modes, profiles, DSP calibration, config, approval workflow, diagnostics. CORS enabled.
 
 See [CLAUDE.md](CLAUDE.md) for the complete endpoint reference.
 
@@ -415,7 +415,7 @@ See [CLAUDE.md](CLAUDE.md) for the complete endpoint reference.
 ```
 Python Engine (audio, DSP, Whisper, LLM, text injection)
         ↕  HTTP on 127.0.0.1:8899
-C++ UI (ImGui + DX11 — controls, spectrum, status)
+C++ UI (ImGui + DX11, controls, spectrum, status)
 ```
 
 11 independent Python services in `services/`. Each handles one thing. They don't import each other. The orchestrator (`app.py`) wires them together.
@@ -435,32 +435,55 @@ Because:
 - Local-first tools should exist.
 - If I ever stop maintaining it, someone else can keep it alive.
 
-If you improve it — awesome.
-If you fork it — awesome.
-If you rip parts out for your own project — awesome.
+If you improve it, awesome.
+If you fork it, awesome.
+If you rip parts out for your own project, awesome.
 
 ---
 
 ## A Quick Note on Overengineering
 
-Yes, this started as:
+This project was supposed to take about an hour.
 
-> "I just need speech-to-text."
+The plan was simple:
 
-It ended up with:
+> "I'll just write a quick Python script so I can talk instead of type while my wrist heals."
+
+Something like:
+
+```python
+listen()
+transcribe()
+type()
+```
+
+Done. Easy.
+
+Except then I thought:
+
+- "It should probably clean up filler words."
+- "Actually a noise gate would help."
+- "Okay but now I want a spectrum analyzer."
+- "Maybe profiles would be nice."
+- "What if it auto-detected the active window?"
+- "You know what… it needs a real UI."
+
+Fast forward several hours and somehow we now have:
 
 - Engine phases
 - Latency metrics
-- DSP chain
-- HTTP API
+- A DSP chain
+- An HTTP API
 - Profiles
-- Auto-detect
-- C++ UI
-- Tray integration
-- Spectrum analyzer
-- And way too much config
+- Auto-detection
+- A C++ desktop UI
+- A system tray service
+- A real-time spectrum analyzer
+- And a lot of configuration knobs
 
-This is what happens when a dev says "I'll just add one more feature."
+All because I said the most dangerous sentence in software engineering:
+
+> "I'll just add one more thing."
 
 ---
 
@@ -470,9 +493,9 @@ Hi.
 
 Thanks for checking it out.
 
-If it helps you — that's the win.
+If it helps you, that's the win.
 
-If it inspires you to build your own weird hyper-personal tool — even better.
+If it inspires you to build your own weird hyper-personal tool, even better.
 
 — Josh
 
