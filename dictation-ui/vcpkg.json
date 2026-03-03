@@ -1,0 +1,16 @@
+{
+  "name": "murmur",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "imgui",
+      "features": [
+        "docking-experimental",
+        "dx11-binding",
+        "win32-binding"
+      ]
+    },
+    "nlohmann-json",
+    "cpp-httplib"
+  ]
+}

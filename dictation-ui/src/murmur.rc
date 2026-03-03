@@ -1,0 +1,3 @@
+// Application icon (used for taskbar, title bar, Alt+Tab)
+// IDI_ICON1 must be the first icon resource — Windows uses it as the default
+IDI_ICON1 ICON "murmur.ico"

@@ -1,0 +1,117 @@
+{
+  "whisper_model": "large-v3",
+  "mic_device_index": 0,
+  "hotkey": "f1",
+  "energy_threshold": 0.01,
+  "silence_timeout": 1.5,
+  "max_speech_seconds": 15,
+  "llm_cleanup": true,
+  "llm_model": "lmstudio-community/Qwen2.5-7B-Instruct-GGUF",
+  "llm_mode": "clean",
+  "command_prefix": "command",
+  "voice_commands": {
+    "new line": "enter",
+    "newline": "enter",
+    "send": "enter",
+    "clear": "select_all_delete",
+    "copy": "copy",
+    "paste": "paste",
+    "stop dictation": "stop",
+    "stop dictating": "stop"
+  },
+  "llm_modes": {
+    "raw": {
+      "llm_cleanup": false
+    },
+    "clean": {
+      "llm_cleanup": true,
+      "llm_system_prompt_file": "prompts/clean_system.txt",
+      "llm_temperature": 0.1,
+      "llm_max_tokens": 500
+    },
+    "prompt": {
+      "llm_cleanup": true,
+      "llm_system_prompt_file": "prompts/prompt_system.txt",
+      "llm_temperature": 0.3,
+      "llm_max_tokens": 1000,
+      "newline_key": "shift+enter"
+    },
+    "dev": {
+      "llm_cleanup": true,
+      "llm_system_prompt_file": "prompts/dev_system.txt",
+      "llm_temperature": 0.2,
+      "llm_max_tokens": 1000
+    }
+  },
+  "profiles": {
+    "Default": {
+      "llm_mode": "clean"
+    },
+    "Terminal": {
+      "llm_mode": "raw"
+    },
+    "LM Studio": {
+      "llm_mode": "prompt",
+      "voice_commands": {
+        "new line": "shift_enter",
+        "newline": "shift_enter",
+        "send": "ctrl_enter",
+        "clear": "select_all_delete",
+        "copy": "copy",
+        "paste": "paste",
+        "stop dictation": "stop"
+      }
+    },
+    "VS Code": {
+      "llm_mode": "dev"
+    },
+    "Meeting": {
+      "llm_mode": "clean"
+    }
+  },
+  "dsp": {
+    "noise_gate": {
+      "enabled": true,
+      "open_threshold_dbfs": -45.0,
+      "close_threshold_dbfs": -56.0,
+      "floor_db": -62.5,
+      "hold_ms": 100.0,
+      "attack_ms": 5.0,
+      "release_ms": 150.0
+    },
+    "compressor": {
+      "enabled": false,
+      "threshold_dbfs": -43.599998474121094,
+      "ratio": 4.199999809265137,
+      "attack_ms": 5.0,
+      "release_ms": 100.0,
+      "makeup_gain_db": 2.700000047683716
+    }
+  },
+  "auto_detect": {
+    "enabled": false,
+    "poll_interval_ms": 500,
+    "rules": [
+      {
+        "window_pattern": ".*LM Studio.*",
+        "profile": "LM Studio"
+      },
+      {
+        "window_pattern": ".*Visual Studio Code.*",
+        "profile": "VS Code"
+      },
+      {
+        "window_pattern": ".*Windows Terminal.*",
+        "profile": "Terminal"
+      },
+      {
+        "window_pattern": ".*Command Prompt.*",
+        "profile": "Terminal"
+      },
+      {
+        "window_pattern": ".*PowerShell.*",
+        "profile": "Terminal"
+      }
+    ]
+  }
+}

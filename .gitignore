@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# Build artifacts
+build/
+dist/
+dictation-ui/build/
+
+# Runtime data
+logs/
+models/
+*.log
+imgui.ini
+
+# Murmur distributable (built with build.bat, distributed via GitHub Releases)
+Murmur/engine/
+Murmur/Murmur.exe
+Murmur/DictationUI.exe
+Murmur/*.dll
+Murmur/models/
+Murmur/logs/
+Murmur/imgui.ini
+
+# IDE / tools
+.vs/
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+desktop.ini
