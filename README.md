@@ -103,6 +103,12 @@ Classic.
 
 ## What It Actually Does
 
+<p align="center">
+  <img src="docs/screenshots/murmur-ui.png" alt="Murmur UI" width="800">
+  <br>
+  <em>The Murmur desktop UI — DSP controls, spectrum analyzer, latency breakdown, and engine status.</em>
+</p>
+
 ### 🎙 Voice → Text (Whisper large-v3)
 
 Runs locally on your GPU using [faster-whisper](https://github.com/SYSTRAN/faster-whisper). CUDA, float16, anti-repetition params, Silero VAD — the works.
@@ -162,7 +168,7 @@ Yes.
 - Disabled by default
 
 **The spectrum analyzer:**
-- 64-bin log-spaced FFT (50Hz–12kHz)
+- 128-bin log-spaced FFT (20Hz–20kHz)
 - EMA smoothing, peak hold, noise floor tracking
 - Phase-based coloring that changes with engine state
 - Toggle pre/post-DSP to see what the gate is doing
@@ -290,6 +296,17 @@ Yes, it works.
 - **LM Studio** at localhost:1234 with a model loaded (for Clean/Prompt/Dev modes — Raw mode works without it)
 - **Python 3.11+** with venv (for running from source — `Murmur.exe` bundles everything)
 
+### Recommended LM Studio Models
+
+Any OpenAI-compatible local model works, but these are tested and tuned for dictation cleanup:
+
+| Model | Why | Notes |
+|-------|-----|-------|
+| **Qwen2.5 7B Instruct** | Best balance of speed and quality | Recommended default |
+| **Mistral 7B Instruct** | Very natural-sounding text | Great for Clean mode |
+| **Phi-3 Mini** | Fastest small model | Good for low-VRAM setups |
+| **Llama 3.2 3B** | Ultra-fast fallback | Minimal latency, lighter cleanup |
+
 ---
 
 ## Running It
@@ -303,8 +320,8 @@ It auto-launches the engine in the background. Press F1 (or click the banner). T
 ### Option 2: From Source
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/murmur.git
-cd murmur
+git clone https://github.com/Roach9223/Murmur.git
+cd Murmur
 
 python -m venv venv
 venv\Scripts\activate
