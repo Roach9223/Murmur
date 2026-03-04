@@ -24,6 +24,7 @@ If you want to talk instead of type, this is for you.
 <summary><strong>Table of Contents</strong></summary>
 
 - [What Is This?](#what-is-this)
+- [**Quick Start (Install)**](#quick-start)
 - [How It Works](#how-it-works-quick-version)
 - [Why I Made This](#why-i-made-this)
 - [What It Actually Does](#what-it-actually-does)
@@ -38,8 +39,6 @@ If you want to talk instead of type, this is for you.
 - [What This Is NOT](#what-this-is-not)
 - [Who This Is For](#who-this-is-for)
 - [The Stack](#the-stack-because-youll-ask)
-- [Requirements](#requirements)
-- [**Quick Start (Install)**](#-quick-start)
 - [Configuration](#configuration)
 - [Building from Source](#building-from-source)
 - [HTTP API](#http-api)
@@ -73,6 +72,58 @@ You talk.
 It types.
 
 That's it.
+
+---
+
+## Quick Start
+
+> [!IMPORTANT]
+> **Requirements:** Windows 10/11 + NVIDIA GPU with CUDA support (4GB+ VRAM).
+> For cleanup modes (Clean/Prompt/Dev): [LM Studio](https://lmstudio.ai) running at localhost:1234 with a model loaded. Raw mode works without it.
+
+### Option 1: Murmur.exe (Recommended)
+
+> [!TIP]
+> **Fastest way to get started.** No Python, no dependencies, no setup.
+
+1. Download or clone this repo
+2. Open the `Murmur/` folder
+3. Run `Murmur.exe`
+4. Press **F1** (or click the banner). Talk. Pause. It types.
+
+The engine launches automatically in the background. The first run downloads the Whisper model (~3GB).
+
+### Option 2: From Source
+
+```bash
+git clone https://github.com/Roach9223/Murmur.git
+cd Murmur
+
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+
+# With HTTP API (required for Murmur.exe UI):
+python app.py --server
+
+# Headless with just tray icon + hotkey:
+python app.py
+
+# Skip LLM cleanup:
+python app.py --no-cleanup
+```
+
+> [!NOTE]
+> Requires Python 3.11+ and an NVIDIA GPU with CUDA toolkit installed.
+
+### CLI Flags
+
+| Flag | Default | What it does |
+|------|---------|-------------|
+| `--server` | off | Start HTTP API on 127.0.0.1:8899 |
+| `--port N` | 8899 | Custom API port |
+| `--no-cleanup` | off | Force Raw mode (no LLM) |
+| `--base-dir PATH` | script dir | Override base directory for config/prompts/models/logs |
 
 ---
 
@@ -312,82 +363,6 @@ It's a tool I built for myself that turned into something useful.
 Yes, it's a hybrid.
 Yes, it's slightly ridiculous.
 Yes, it works.
-
----
-
-## Requirements
-
-### Hardware
-- **GPU**: NVIDIA with CUDA support (tested on RTX 4090, any modern NVIDIA GPU with 4GB+ VRAM should work)
-- **Mic**: Any Windows-compatible audio input
-- **OS**: Windows 10/11
-
-### Software
-- **LM Studio** at localhost:1234 with a model loaded (for Clean/Prompt/Dev modes, Raw mode works without it)
-- **Python 3.11+** with venv (for running from source, `Murmur.exe` bundles everything)
-
-### Recommended LM Studio Models
-
-Any OpenAI-compatible local model works, but these are tested and tuned for dictation cleanup:
-
-| Model | Why | Notes |
-|-------|-----|-------|
-| **Qwen2.5 7B Instruct** | Best balance of speed and quality | Recommended default |
-| **Mistral 7B Instruct** | Very natural-sounding text | Great for Clean mode |
-| **Phi-3 Mini** | Fastest small model | Good for low-VRAM setups |
-| **Llama 3.2 3B** | Ultra-fast fallback | Minimal latency, lighter cleanup |
-
----
-
-## Quick Start
-
-> [!IMPORTANT]
-> **Requirements:** Windows 10/11 + NVIDIA GPU with CUDA support (4GB+ VRAM).
-> For cleanup modes (Clean/Prompt/Dev): [LM Studio](https://lmstudio.ai) running at localhost:1234 with a model loaded. Raw mode works without it.
-
-### Option 1: Murmur.exe (Recommended)
-
-> [!TIP]
-> **Fastest way to get started.** No Python, no dependencies, no setup.
-
-1. Download or clone this repo
-2. Open the `Murmur/` folder
-3. Run `Murmur.exe`
-4. Press **F1** (or click the banner). Talk. Pause. It types.
-
-The engine launches automatically in the background. The first run downloads the Whisper model (~3GB).
-
-### Option 2: From Source
-
-```bash
-git clone https://github.com/Roach9223/Murmur.git
-cd Murmur
-
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-
-# With HTTP API (required for Murmur.exe UI):
-python app.py --server
-
-# Headless with just tray icon + hotkey:
-python app.py
-
-# Skip LLM cleanup:
-python app.py --no-cleanup
-```
-
-> [!NOTE]
-> Requires Python 3.11+ and an NVIDIA GPU with CUDA toolkit installed.
-
-### CLI Flags
-
-| Flag | Default | What it does |
-|------|---------|-------------|
-| `--server` | off | Start HTTP API on 127.0.0.1:8899 |
-| `--port N` | 8899 | Custom API port |
-| `--no-cleanup` | off | Force Raw mode (no LLM) |
-| `--base-dir PATH` | script dir | Override base directory for config/prompts/models/logs |
 
 ---
 
