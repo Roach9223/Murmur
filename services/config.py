@@ -13,6 +13,7 @@ DEFAULTS = {
     "energy_threshold": 0.01,
     "silence_timeout": 1.5,
     "max_speech_seconds": 15,
+    "audio_queue_maxsize": 500,
     "llm_cleanup": True,
     "llm_model": "lmstudio-community/Qwen2.5-7B-Instruct-GGUF",
     "llm_system_prompt_file": "prompts/clean_system.txt",
@@ -87,6 +88,19 @@ DEFAULT_AUTO_DETECT = {
     "rules": [],
 }
 
+DEFAULT_VAD = {
+    "enabled": False,
+    "threshold": 0.5,
+    "min_silence_ms": 300,
+    "speech_pad_ms": 30,
+    "window_size": 512,
+}
+
+DEFAULT_RECORDING = {
+    "default_source": "post",
+    "save_dir": "Recordings",
+}
+
 DEFAULT_DSP = {
     "noise_gate": {
         "enabled": True,
@@ -140,6 +154,14 @@ class ConfigManager:
             self.cfg["auto_detect"] = dict(DEFAULT_AUTO_DETECT)
         if "llm_mode" not in self.cfg:
             self.cfg["llm_mode"] = "clean"
+        # VAD: inject defaults if missing
+        if "vad" not in self.cfg:
+            self.cfg["vad"] = dict(DEFAULT_VAD)
+        if "audio_queue_maxsize" not in self.cfg:
+            self.cfg["audio_queue_maxsize"] = 500
+        # Recording defaults
+        if "recording" not in self.cfg:
+            self.cfg["recording"] = dict(DEFAULT_RECORDING)
         # DSP: inject full default or backfill missing sub-keys
         if "dsp" not in self.cfg:
             self.cfg["dsp"] = json.loads(json.dumps(DEFAULT_DSP))

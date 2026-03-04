@@ -14,6 +14,9 @@
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+// Shared fonts (accessible from app.cpp)
+ImFont* g_bannerFont = nullptr;
+
 // DX11 globals
 static ID3D11Device*           g_pd3dDevice = nullptr;
 static ID3D11DeviceContext*    g_pd3dDeviceContext = nullptr;
@@ -172,6 +175,12 @@ int main(int, char**)
             // Fallback: use default font with better size
             io.Fonts->AddFontDefault();
         }
+
+        // Semibold banner font for the voice-to-type hero button
+        g_bannerFont = io.Fonts->AddFontFromFileTTF(
+            "C:\\Windows\\Fonts\\seguisb.ttf", 17.0f);
+        if (!g_bannerFont)
+            g_bannerFont = io.Fonts->Fonts[0];  // fallback to regular
     }
 
     // Setup backends

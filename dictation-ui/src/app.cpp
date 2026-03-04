@@ -5,6 +5,16 @@
 #include <cctype>
 #include <cmath>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#include <commdlg.h>
+
+// Semibold font for the voice-to-type banner (defined in main.cpp)
+extern ImFont* g_bannerFont;
+
 DictationApp::DictationApp(EngineClient& engine, EngineProcess& process)
     : m_engine(engine), m_process(process) {}
 
@@ -161,9 +171,15 @@ void DictationApp::Render()
 
     // --- Connection status ---
     if (status.connected) {
-        ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "ENGINE: CONNECTED");
-        ImGui::SameLine();
-        ImGui::TextDisabled("v%s  |  uptime %.0fs", status.version.c_str(), status.uptime_s);
+        if (status.model_loading) {
+            ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.1f, 1.0f), "ENGINE: LOADING MODEL...");
+            ImGui::SameLine();
+            ImGui::TextDisabled("v%s  |  uptime %.0fs", status.version.c_str(), status.uptime_s);
+        } else {
+            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "ENGINE: CONNECTED");
+            ImGui::SameLine();
+            ImGui::TextDisabled("v%s  |  uptime %.0fs", status.version.c_str(), status.uptime_s);
+        }
     } else {
         ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "ENGINE: DISCONNECTED");
         ImGui::SameLine();
@@ -201,20 +217,28 @@ void DictationApp::Render()
         return;
     }
 
-    // --- Recording indicator banner ---
+    // --- Voice-to-Type banner (hero button) ---
     {
         std::string hkUpper = status.hotkey;
         for (auto& c : hkUpper) c = (char)toupper((unsigned char)c);
 
-        if (status.recording) {
+        ImGui::PushFont(g_bannerFont);
+        if (status.model_loading) {
+            float pulse = 0.4f + 0.15f * (float)sin(ImGui::GetTime() * 3.0);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(pulse, pulse * 0.7f, 0.05f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(pulse, pulse * 0.7f, 0.05f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(pulse, pulse * 0.7f, 0.05f, 1.0f));
+            ImGui::Button("Loading Whisper Model...", ImVec2(-1, 42));
+            ImGui::PopStyleColor(3);
+        } else if (status.recording) {
             float pulse = 0.5f + 0.3f * (float)sin(ImGui::GetTime() * 4.0);
             ImVec4 recCol(pulse, 0.08f, 0.08f, 1.0f);
             ImGui::PushStyleColor(ImGuiCol_Button, recCol);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.4f, 0.05f, 0.05f, 1.0f));
             char label[128];
-            snprintf(label, sizeof(label), "RECORDING  (press %s or click to stop)", hkUpper.c_str());
-            if (ImGui::Button(label, ImVec2(-1, 35)))
+            snprintf(label, sizeof(label), "Voice to Type  \xc2\xb7  Active  (%s to stop)", hkUpper.c_str());
+            if (ImGui::Button(label, ImVec2(-1, 42)))
                 m_engine.Stop();
             ImGui::PopStyleColor(3);
         } else {
@@ -222,11 +246,12 @@ void DictationApp::Render()
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
             char label[128];
-            snprintf(label, sizeof(label), "IDLE  (press %s or click to start)", hkUpper.c_str());
-            if (ImGui::Button(label, ImVec2(-1, 35)))
+            snprintf(label, sizeof(label), "Voice to Type  \xc2\xb7  Press %s to start", hkUpper.c_str());
+            if (ImGui::Button(label, ImVec2(-1, 42)))
                 m_engine.Start();
             ImGui::PopStyleColor(3);
         }
+        ImGui::PopFont();
     }
 
     // --- State + Profile ---
@@ -293,6 +318,359 @@ void DictationApp::Render()
         ImGui::PopStyleColor(3);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Hold hotkey to record, release to stop");
+
+        // --- Record / Audio to Text / Folder (right side of same row) ---
+        ImGui::SameLine(ImGui::GetWindowWidth() - 310);
+
+        // Record button
+        bool wavActive = status.wav_recording.active;
+        if (wavActive) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.65f, 0.08f, 0.08f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.4f, 0.05f, 0.05f, 1.0f));
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+        }
+        if (ImGui::Button(wavActive ? "Stop Rec" : "Record", ImVec2(80, 25))) {
+            if (wavActive) {
+                m_engine.StopWavRecording();
+            } else {
+                const char* sources[] = { "post", "pre" };
+                m_engine.StartWavRecording(sources[m_recordSourceIdx]);
+            }
+        }
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(wavActive ? "Stop WAV recording" : "Record mic audio to WAV file");
+
+        ImGui::SameLine(0, 6);
+
+        // Audio to Text button
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.35f, 0.55f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.45f, 0.65f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.25f, 0.45f, 1.0f));
+        bool a2tDisabled = status.file_transcription.active || status.model_loading;
+        if (a2tDisabled) ImGui::BeginDisabled();
+        if (ImGui::Button("Audio to Text", ImVec2(120, 25))) {
+            wchar_t szFile[MAX_PATH] = {};
+            OPENFILENAMEW ofn = {};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.lpstrFilter = L"Audio Files\0*.wav;*.mp3;*.flac;*.m4a;*.ogg\0All Files\0*.*\0";
+            ofn.lpstrFile = szFile;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+            std::wstring initDir;
+            if (!status.recordings_dir.empty()) {
+                initDir.assign(status.recordings_dir.begin(), status.recordings_dir.end());
+                ofn.lpstrInitialDir = initDir.c_str();
+            }
+            if (GetOpenFileNameW(&ofn)) {
+                int len = WideCharToMultiByte(CP_UTF8, 0, szFile, -1, nullptr, 0, nullptr, nullptr);
+                std::string path(len - 1, '\0');
+                WideCharToMultiByte(CP_UTF8, 0, szFile, -1, path.data(), len, nullptr, nullptr);
+                std::string a2tError;
+                bool ok = m_engine.TranscribeFile(path, a2tError);
+                m_showTranscriptionPopup = true;
+                m_lastTranscriptStatus.clear();
+                if (!ok) {
+                    m_lastTranscriptStatus = "Error: " + a2tError;
+                }
+            }
+        }
+        if (a2tDisabled) ImGui::EndDisabled();
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (status.model_loading)
+                ImGui::SetTooltip("Wait for Whisper model to load");
+            else if (status.file_transcription.active)
+                ImGui::SetTooltip("Transcription in progress...");
+            else
+                ImGui::SetTooltip("Transcribe an audio file to text (WAV, MP3, FLAC)");
+        }
+
+        ImGui::SameLine(0, 6);
+
+        // Folder button
+        if (ImGui::Button("Folder", ImVec2(55, 25))) {
+            std::string dir = status.recordings_dir;
+            if (!dir.empty()) {
+                CreateDirectoryA(dir.c_str(), NULL);
+                ShellExecuteA(NULL, "open", dir.c_str(), NULL, NULL, SW_SHOWNORMAL);
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Open recordings folder");
+
+        // Timer inline when WAV recording is active
+        if (wavActive) {
+            ImGui::SameLine(0, 8);
+            int secs = (int)status.wav_recording.seconds;
+            char timer[16];
+            snprintf(timer, sizeof(timer), "%02d:%02d", secs / 60, secs % 60);
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", timer);
+        }
+    }
+
+    // --- Transcription Progress Popup ---
+    // Auto-open when transcription starts (e.g. via API)
+    if (status.file_transcription.active && !m_showTranscriptionPopup) {
+        m_showTranscriptionPopup = true;
+    }
+
+    if (m_showTranscriptionPopup) {
+        ImGui::OpenPopup("Transcription Progress");
+    }
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(700, 420), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Transcription Progress", nullptr,
+                               ImGuiWindowFlags_NoMove)) {
+        auto& ft = status.file_transcription;
+
+        // Throttled log fetch (~1s interval while popup is open)
+        if (now - m_lastLogFetchTime > 1.0) {
+            m_transcriptLogLines = m_engine.FetchLogTail(30);
+            m_lastLogFetchTime = now;
+        }
+
+        // Extract filename from path
+        std::string filename = ft.input_path;
+        auto lastSlash = filename.find_last_of("\\/");
+        if (lastSlash != std::string::npos)
+            filename = filename.substr(lastSlash + 1);
+
+        if (ft.active) {
+            // In-progress
+            ImGui::Text("File:");
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", filename.c_str());
+            ImGui::Spacing();
+
+            if (ft.status == "transcribing") {
+                ImGui::Text("Transcribing...");
+                ImGui::ProgressBar(ft.progress / 100.0f, ImVec2(-1, 0));
+                ImGui::Text("%.0f%%", ft.progress);
+            } else if (ft.status == "cleaning") {
+                ImGui::Text("Cleaning with LLM...");
+                float t = (float)fmod(ImGui::GetTime() * 0.5, 1.0);
+                ImGui::ProgressBar(t, ImVec2(-1, 0));
+            }
+        } else if (ft.status == "done") {
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Transcription Complete");
+            ImGui::Spacing();
+            ImGui::Text("File:");
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", filename.c_str());
+            ImGui::Spacing();
+
+            if (ft.output_path.empty()) {
+                // Not saved yet — show format choice buttons
+                ImGui::Text("Save as:");
+                ImGui::Spacing();
+
+                if (ImGui::Button("Save as .txt", ImVec2(140, 0))) {
+                    std::string saved_path;
+                    m_engine.SaveTranscription("txt", saved_path);
+                    if (!saved_path.empty())
+                        m_lastTranscriptStatus = saved_path;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Save as .md", ImVec2(140, 0))) {
+                    std::string saved_path;
+                    m_engine.SaveTranscription("md", saved_path);
+                    if (!saved_path.empty())
+                        m_lastTranscriptStatus = saved_path;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Close##done_unsaved", ImVec2(80, 0))) {
+                    m_showTranscriptionPopup = false;
+                    m_transcriptLogLines.clear();
+                    ImGui::CloseCurrentPopup();
+                }
+            } else {
+                // Already saved — show path + Open Folder
+                std::string outName = ft.output_path;
+                auto outSlash = outName.find_last_of("\\/");
+                if (outSlash != std::string::npos)
+                    outName = outName.substr(outSlash + 1);
+                ImGui::Text("Saved:");
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", outName.c_str());
+                ImGui::Spacing();
+
+                if (ImGui::Button("Open Folder", ImVec2(120, 0))) {
+                    std::string cmd = "/select,\"" + ft.output_path + "\"";
+                    ShellExecuteA(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWNORMAL);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Close##done_saved", ImVec2(80, 0))) {
+                    m_showTranscriptionPopup = false;
+                    m_transcriptLogLines.clear();
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        } else if (ft.status == "error") {
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Transcription Failed");
+            ImGui::Spacing();
+            ImGui::TextWrapped("Error: %s", ft.error.c_str());
+            ImGui::Spacing();
+            if (ImGui::Button("Close", ImVec2(80, 0))) {
+                m_showTranscriptionPopup = false;
+                m_transcriptLogLines.clear();
+                ImGui::CloseCurrentPopup();
+            }
+        } else {
+            if (!m_lastTranscriptStatus.empty()) {
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", m_lastTranscriptStatus.c_str());
+                ImGui::Spacing();
+            }
+            if (ImGui::Button("Close", ImVec2(80, 0))) {
+                m_showTranscriptionPopup = false;
+                m_transcriptLogLines.clear();
+                ImGui::CloseCurrentPopup();
+            }
+        }
+
+        // --- Engine Log panel ---
+        ImGui::Spacing();
+        ImGui::SeparatorText("Engine Log");
+        float logHeight = ImGui::GetContentRegionAvail().y - 4.0f;
+        if (logHeight < 40.0f) logHeight = 40.0f;
+        ImGui::BeginChild("##TranscriptLog", ImVec2(-1, logHeight), ImGuiChildFlags_Border,
+                          ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        for (const auto& line : m_transcriptLogLines) {
+            ImGui::TextUnformatted(line.c_str());
+        }
+        // Auto-scroll to bottom
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 20.0f)
+            ImGui::SetScrollHereY(1.0f);
+        ImGui::EndChild();
+
+        ImGui::EndPopup();
+    }
+
+    // --- Calibration Popup ---
+    if (m_showCalPopup) {
+        ImGui::OpenPopup("Microphone Calibration");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(500, 280), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Microphone Calibration", nullptr, ImGuiWindowFlags_NoMove)) {
+        float elapsed = (float)(now - m_calStartTime);
+
+        if (m_calPhase == 0) {
+            // Phase 0: Silence measurement
+            ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Step 1 of 2: Measuring Room Noise");
+            ImGui::Spacing();
+            ImGui::TextWrapped("Stay quiet — measuring ambient noise level...");
+            ImGui::Spacing();
+            float silenceDuration = 2.0f;
+            float progress = fminf(elapsed / silenceDuration, 1.0f);
+            ImGui::ProgressBar(progress, ImVec2(-1, 0));
+            char timerBuf[32];
+            snprintf(timerBuf, sizeof(timerBuf), "%.1fs remaining", fmaxf(0.0f, silenceDuration - elapsed));
+            ImGui::TextDisabled("%s", timerBuf);
+
+            // Auto-transition to speech phase
+            if (elapsed >= silenceDuration + 0.3f) {
+                if (m_engine.FinishSilenceCalibration()) {
+                    m_calNoiseFloor = status.gate.calibrated_noise_floor_dbfs;
+                    m_engine.StartSpeechCalibration();
+                    m_calStartTime = now;
+                    m_calPhase = 1;
+                } else {
+                    m_calPhase = -1;
+                    m_calError = "Silence calibration failed — speech was detected. Please try again and stay quiet.";
+                }
+            }
+        } else if (m_calPhase == 1) {
+            // Phase 1: Speech measurement
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Step 2 of 2: Measuring Speech Level");
+            ImGui::Spacing();
+            ImGui::TextWrapped("Read this sentence aloud at your normal speaking volume:");
+            ImGui::Spacing();
+
+            // Display the LLM-generated prompt prominently
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.15f, 0.2f, 1.0f));
+            ImGui::BeginChild("##calPrompt", ImVec2(-1, 50), ImGuiChildFlags_Border);
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 8.0f);
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.7f, 1.0f), "\"%s\"", m_calPrompt.c_str());
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+
+            ImGui::Spacing();
+            float speechDuration = 3.0f;
+            float progress = fminf(elapsed / speechDuration, 1.0f);
+            ImGui::ProgressBar(progress, ImVec2(-1, 0));
+            char timerBuf[32];
+            snprintf(timerBuf, sizeof(timerBuf), "%.1fs remaining", fmaxf(0.0f, speechDuration - elapsed));
+            ImGui::TextDisabled("%s", timerBuf);
+
+            // Auto-finish
+            if (elapsed >= speechDuration + 0.3f) {
+                if (m_engine.FinishCalibration()) {
+                    m_calNoiseFloor = status.gate.calibrated_noise_floor_dbfs;
+                    m_calSpeechLevel = status.gate.calibrated_speech_dbfs;
+                    m_calOpenThresh = status.gate.open_threshold_dbfs;
+                    m_calCloseThresh = status.gate.close_threshold_dbfs;
+                    m_calPhase = 2;
+                } else {
+                    m_calPhase = -1;
+                    m_calError = "Calibration failed — could not compute thresholds.";
+                }
+            }
+        } else if (m_calPhase == 2) {
+            // Phase 2: Results
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Calibration Complete!");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::Text("Noise Floor:");
+            ImGui::SameLine(180);
+            ImGui::Text("%.1f dBFS", m_calNoiseFloor);
+            ImGui::Text("Speech Level:");
+            ImGui::SameLine(180);
+            ImGui::Text("%.1f dBFS", m_calSpeechLevel);
+            ImGui::Spacing();
+            ImGui::Text("Open Threshold:");
+            ImGui::SameLine(180);
+            ImGui::Text("%.1f dBFS", m_calOpenThresh);
+            ImGui::Text("Close Threshold:");
+            ImGui::SameLine(180);
+            ImGui::Text("%.1f dBFS", m_calCloseThresh);
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::TextDisabled("Thresholds have been applied and saved.");
+            ImGui::Spacing();
+            if (ImGui::Button("Done", ImVec2(120, 0))) {
+                m_showCalPopup = false;
+                ImGui::CloseCurrentPopup();
+            }
+        } else {
+            // Error state
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Calibration Failed");
+            ImGui::Spacing();
+            ImGui::TextWrapped("%s", m_calError.c_str());
+            ImGui::Spacing();
+            if (ImGui::Button("Retry", ImVec2(100, 0))) {
+                m_calPhase = 0;
+                m_calError.clear();
+                m_calPrompt = m_engine.FetchCalibrationPrompt();
+                m_engine.StartCalibration();
+                m_calStartTime = now;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Close", ImVec2(100, 0))) {
+                m_showCalPopup = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+
+        ImGui::EndPopup();
     }
 
     // --- Processing (DSP) ---
@@ -413,32 +791,18 @@ void DictationApp::Render()
                 ImGui::PopItemWidth();
                 if (m_dspLocked) ImGui::EndDisabled();
 
-                // Auto Calibrate button
-                if (status.gate.calibrating) {
-                    float elapsed = (float)(ImGui::GetTime() - m_calStartTime);
-                    char calLabel[64];
-                    snprintf(calLabel, sizeof(calLabel), "Calibrating... %.1fs", fmaxf(0.0f, 1.5f - elapsed));
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.5f, 0.1f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.6f, 0.5f, 0.1f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.6f, 0.5f, 0.1f, 1.0f));
-                    ImGui::Button(calLabel, ImVec2(200, 22));
-                    ImGui::PopStyleColor(3);
-
-                    // Auto-finish after timeout
-                    if (elapsed >= 1.8f && m_calWaiting) {
-                        m_engine.FinishCalibration();
-                        m_calWaiting = false;
-                    }
-                } else {
-                    if (ImGui::Button("Auto Calibrate", ImVec2(140, 22))) {
-                        m_engine.StartCalibration();
-                        m_calStartTime = ImGui::GetTime();
-                        m_calWaiting = true;
-                    }
-                    if (status.gate.calibrated_noise_floor_dbfs > -79.0f) {
-                        ImGui::SameLine();
-                        ImGui::TextDisabled("Noise floor: %.1f dBFS", status.gate.calibrated_noise_floor_dbfs);
-                    }
+                // Auto Calibrate button — opens guided popup
+                if (ImGui::Button("Auto Calibrate", ImVec2(140, 22))) {
+                    m_showCalPopup = true;
+                    m_calPhase = 0;
+                    m_calError.clear();
+                    m_calPrompt = m_engine.FetchCalibrationPrompt();
+                    m_engine.StartCalibration();
+                    m_calStartTime = ImGui::GetTime();
+                }
+                if (status.gate.calibrated_noise_floor_dbfs > -79.0f) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("Noise floor: %.1f dBFS", status.gate.calibrated_noise_floor_dbfs);
                 }
             }
         }

@@ -23,15 +23,22 @@ class AudioCaptureService:
     DB_FLOOR = -96.0        # Matches SSL 2 MKII ~98dB SNR
     DB_CEIL = 0.0
 
-    def __init__(self, device_index: int, dsp_chain=None):
+    def __init__(self, device_index: int, dsp_chain=None, queue_maxsize: int = 500):
         self.device_index = device_index
         self.recording = False
-        self.audio_q: queue.Queue[tuple[np.ndarray, float]] = queue.Queue()
+        self.audio_q: queue.Queue[tuple[np.ndarray, float]] = queue.Queue(
+            maxsize=queue_maxsize if queue_maxsize > 0 else 0
+        )
         self._stream = None
         self._error_count = 0
         self._needs_restart = False
         self._dsp_chain = dsp_chain
         self._live_rms = 0.0
+        self._queue_drops = 0
+
+        # --- WAV recording tap (independent of dictation) ---
+        self._wav_recorder = None
+        self._record_pre_dsp = False
 
         # --- Spectrum / FFT state ---
         # Blackman-Harris 4-term window: >92dB sidelobe rejection (vs Hann's 32dB)
@@ -123,7 +130,26 @@ class AudioCaptureService:
         if self.recording:
             rms = float(np.sqrt(np.mean(processed ** 2)))
             out = processed.reshape(-1, 1) if indata.ndim > 1 else processed
-            self.audio_q.put((out.copy() if out.base is not None else out, rms))
+            item = (out.copy() if out.base is not None else out, rms)
+            try:
+                self.audio_q.put_nowait(item)
+            except queue.Full:
+                try:
+                    self.audio_q.get_nowait()  # drop oldest
+                except queue.Empty:
+                    pass
+                try:
+                    self.audio_q.put_nowait(item)
+                except queue.Full:
+                    pass
+                self._queue_drops += 1
+                if self._queue_drops % 100 == 1:
+                    logger.warning("Audio queue full — dropped %d chunks", self._queue_drops)
+
+        # WAV recording tap (independent of dictation recording)
+        if self._wav_recorder is not None and self._wav_recorder.is_recording:
+            source = mono if self._record_pre_dsp else processed
+            self._wav_recorder.push(source)
 
     def start_stream(self):
         """Open the mic stream (always on). Call start_recording()/stop_recording() to control capture."""
@@ -186,6 +212,13 @@ class AudioCaptureService:
         return self._needs_restart
 
     def start_recording(self):
+        # Drain stale audio from previous sessions
+        while not self.audio_q.empty():
+            try:
+                self.audio_q.get_nowait()
+            except queue.Empty:
+                break
+        self._queue_drops = 0
         self.recording = True
 
     def stop_recording(self):
@@ -297,11 +330,23 @@ class AudioCaptureService:
     def live_rms(self) -> float:
         return self._live_rms
 
+    @property
+    def queue_drops(self) -> int:
+        return self._queue_drops
+
     def get_dsp_state(self) -> dict | None:
         """Return current DSP state for status reporting."""
         if self._dsp_chain is not None:
             return self._dsp_chain.get_state()
         return None
+
+    def set_wav_recorder(self, recorder):
+        """Set or clear the WAV recorder reference (called from app.py)."""
+        self._wav_recorder = recorder
+
+    def set_record_source(self, pre_dsp: bool):
+        """Toggle WAV recording source between pre-DSP (raw) and post-DSP (processed)."""
+        self._record_pre_dsp = pre_dsp
 
     def set_spectrum_source(self, pre_dsp: bool):
         """Toggle spectrum between pre-DSP (raw) and post-DSP (processed)."""

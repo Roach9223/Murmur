@@ -1,7 +1,10 @@
+import datetime
 import json
 import os
 import logging
 import logging.handlers
+import shutil
+import subprocess
 import time
 import threading
 import queue
@@ -87,7 +90,8 @@ class DictationApp:
         self.dsp_chain = DSPChain(gate, compressor)
 
         mic_index = self._resolve_mic_device()
-        self.audio = AudioCaptureService(mic_index, dsp_chain=self.dsp_chain)
+        queue_maxsize = self.config.cfg.get("audio_queue_maxsize", 500)
+        self.audio = AudioCaptureService(mic_index, dsp_chain=self.dsp_chain, queue_maxsize=queue_maxsize)
         model_dir = os.path.join(self.config.project_dir, "models")
         self.transcriber = TranscriptionEngine(
             self.config.get("whisper_model"), "cuda", COMPUTE_TYPE,
@@ -164,10 +168,33 @@ class DictationApp:
         self.max_speech_sec = self.config.get("max_speech_seconds")
         self.toggle_key = self.config.get("hotkey")
 
+        # VAD (created here, model loaded async later)
+        self.vad_enabled = False
+        self.vad = None
+
+        # WAV recording
+        self.wav_recorder = None
+        self.record_source = self.config.cfg.get("recording", {}).get("default_source", "post")
+        self.last_recording_path = None
+        self.ffmpeg_available = shutil.which("ffmpeg") is not None
+
+        # File transcription state (Audio to Text feature)
+        self._file_transcription = {
+            "active": False,
+            "status": "idle",
+            "input_path": "",
+            "output_path": "",
+            "error": "",
+            "progress": 0.0,
+        }
+
+        # Model loading state (Whisper + VAD loaded in background)
+        self._model_loading = True
+
         # Windows console close handler
         self._install_console_handler()
 
-        # HTTP API server (optional, only with --server flag)
+        # HTTP API server — start early so UI connects immediately
         self.api_server = None
         if self.config.args.server:
             from services.server import APIServer
@@ -176,6 +203,8 @@ class DictationApp:
                 host="127.0.0.1",
                 port=self.config.args.port,
             )
+            self.api_server.start()
+            logger.info("API: http://127.0.0.1:%d (model loading in background)", self.config.args.port)
 
     # --- Mic device resolution ---
 
@@ -230,6 +259,35 @@ class DictationApp:
 
         kernel32.SetConsoleCtrlHandler(handler, True)
         self._console_handler = handler  # prevent GC
+
+    # --- Async model loading ---
+
+    def _load_models_async(self):
+        """Load Whisper + VAD models in a background thread so the API server is responsive immediately."""
+        try:
+            self.transcriber.load_model()
+        except Exception as e:
+            logger.error("Failed to load Whisper model: %s", e)
+            self.engine_state.last_error = f"Whisper load failed: {e}"
+
+        # VAD (optional)
+        vad_cfg = self.config.cfg.get("vad", {})
+        if vad_cfg.get("enabled", False):
+            from services.vad import VoiceActivityDetector
+            self.vad = VoiceActivityDetector(
+                threshold=vad_cfg.get("threshold", 0.5),
+                min_silence_ms=vad_cfg.get("min_silence_ms", 300),
+                speech_pad_ms=vad_cfg.get("speech_pad_ms", 30),
+                window_size=vad_cfg.get("window_size", 512),
+            )
+            if self.vad.load_model():
+                self.vad_enabled = True
+            else:
+                self.vad = None
+                logger.warning("[vad] Falling back to RMS threshold")
+
+        self._model_loading = False
+        logger.info("All models loaded — ready for dictation")
 
     # --- Mode / Profile switching ---
 
@@ -338,21 +396,37 @@ class DictationApp:
         self.tray.on_state_changed()
 
     def _transcription_loop(self):
-        """Silence-detection state machine."""
+        """Dispatch to VAD or RMS transcription loop based on config."""
+        if self.vad_enabled and self.vad:
+            self._transcription_loop_vad()
+        else:
+            self._transcription_loop_rms()
+
+    def _check_audio_health(self) -> bool:
+        """Check audio stream, attempt restart if needed. Returns False if unrecoverable."""
+        if self.audio.needs_restart:
+            if not self.audio.restart_stream():
+                logger.error("Audio stream unrecoverable, stopping recording")
+                self.engine_state.phase = EnginePhase.ERROR
+                self.engine_state.last_error = "Audio stream unrecoverable"
+                self.recording = False
+                return False
+        return True
+
+    def _transcription_loop_rms(self):
+        """RMS energy threshold silence-detection state machine."""
+        # Wait for model to finish loading before processing audio
+        while self._model_loading and self.recording:
+            time.sleep(0.1)
+
         speech_chunks: list[np.ndarray] = []
         speech_start: float | None = None
         silence_start: float | None = None
         audio_q = self.audio.audio_q
 
         while self.recording:
-            # Check for audio stream errors
-            if self.audio.needs_restart:
-                if not self.audio.restart_stream():
-                    logger.error("Audio stream unrecoverable, stopping recording")
-                    self.engine_state.phase = EnginePhase.ERROR
-                    self.engine_state.last_error = "Audio stream unrecoverable"
-                    self.recording = False
-                    break
+            if not self._check_audio_health():
+                break
 
             try:
                 data, rms = audio_q.get(timeout=0.1)
@@ -400,6 +474,86 @@ class DictationApp:
             self._flush(speech_chunks)
         logger.info("  Done.\n")
 
+    def _transcription_loop_vad(self):
+        """Silero VAD speech-detection state machine. Accumulates 16kHz audio directly."""
+        # Wait for model to finish loading before processing audio
+        while self._model_loading and self.recording:
+            time.sleep(0.1)
+
+        speech_chunks_16k: list[np.ndarray] = []
+        speech_active = False
+        speech_start: float | None = None
+        silence_start: float | None = None
+        audio_q = self.audio.audio_q
+
+        self.vad.reset()
+        min_silence_sec = self.vad.min_silence_ms / 1000.0
+
+        while self.recording:
+            if not self._check_audio_health():
+                break
+
+            try:
+                data, rms = audio_q.get(timeout=0.1)
+            except queue.Empty:
+                if speech_start and time.time() - speech_start >= self.max_speech_sec:
+                    self._flush_16k(speech_chunks_16k)
+                    speech_chunks_16k, speech_start, silence_start, speech_active = [], None, None, False
+                    self.vad.reset()
+                    self.engine_state.phase = EnginePhase.LISTENING
+                continue
+
+            # Live RMS for audio meter (still useful for UI)
+            self.engine_state.audio_rms = rms
+
+            # Resample + VAD in one call
+            chunk_16k, vad_results = self.vad.process_chunk(data)
+
+            # Determine if any VAD window detected speech
+            chunk_is_speech = any(is_speech for _, is_speech in vad_results) if vad_results else False
+
+            # Expose latest speech probability for status API
+            if vad_results:
+                self.engine_state.vad_speech_prob = vad_results[-1][0]
+
+            if chunk_is_speech:
+                silence_start = None
+                if not speech_active:
+                    speech_active = True
+                    speech_start = time.time()
+                    self.engine_state.phase = EnginePhase.RECORDING
+                speech_chunks_16k.append(chunk_16k)
+            else:
+                if speech_active:
+                    speech_chunks_16k.append(chunk_16k)  # trailing silence for natural blending
+                    if silence_start is None:
+                        silence_start = time.time()
+                    elif time.time() - silence_start >= min_silence_sec:
+                        self._flush_16k(speech_chunks_16k)
+                        speech_chunks_16k, speech_start, silence_start, speech_active = [], None, None, False
+                        self.vad.reset()
+                        self.engine_state.phase = EnginePhase.LISTENING
+
+            # Max speech duration cap
+            if speech_start and time.time() - speech_start >= self.max_speech_sec:
+                self._flush_16k(speech_chunks_16k)
+                speech_chunks_16k, speech_start, silence_start, speech_active = [], None, None, False
+                self.vad.reset()
+                self.engine_state.phase = EnginePhase.LISTENING
+
+        # Final flush on recording stop
+        while True:
+            try:
+                data, rms = audio_q.get_nowait()
+                chunk_16k, _ = self.vad.process_chunk(data)
+                speech_chunks_16k.append(chunk_16k)
+            except queue.Empty:
+                break
+        if speech_chunks_16k:
+            self._flush_16k(speech_chunks_16k)
+        self.vad.reset()
+        logger.info("  Done.\n")
+
     def _flush(self, chunks: list[np.ndarray]):
         if not chunks:
             return
@@ -410,8 +564,25 @@ class DictationApp:
             self.engine_state.phase = EnginePhase.ERROR
             self.engine_state.last_error = str(e)
 
+    def _flush_16k(self, chunks_16k: list[np.ndarray]):
+        """Flush already-resampled 16kHz audio to the transcription pipeline."""
+        if not chunks_16k:
+            return
+        try:
+            audio = np.concatenate(chunks_16k, axis=0).astype(np.float32).squeeze()
+            self._process_audio_16k(audio)
+        except Exception as e:
+            logger.error("  [error] %s", e)
+            self.engine_state.phase = EnginePhase.ERROR
+            self.engine_state.last_error = str(e)
+
     def _process_speech(self, chunks: list[np.ndarray]):
+        """RMS path: resample 48kHz chunks to 16kHz, then process."""
         audio = AudioCaptureService.resample(chunks)
+        self._process_audio_16k(audio)
+
+    def _process_audio_16k(self, audio: np.ndarray):
+        """Shared pipeline: takes 16kHz audio, transcribes, cleans, types."""
         duration = len(audio) / WHISPER_RATE
 
         if len(audio) < WHISPER_RATE // 4:
@@ -695,6 +866,214 @@ class DictationApp:
         except Exception as e:
             logger.warning("Failed to save DSP config: %s", e)
 
+    # --- WAV Recording ---
+
+    def start_wav_recording(self, source: str = "post"):
+        """Start recording mic audio to a WAV file."""
+        from services.recording import WavRecorder
+
+        if self.wav_recorder and self.wav_recorder.is_recording:
+            logger.warning("[rec] Already recording WAV")
+            return
+
+        self.record_source = source
+        rec_cfg = self.config.cfg.get("recording", {})
+        save_dir = os.path.join(self.config.project_dir, rec_cfg.get("save_dir", "Recordings"))
+        os.makedirs(save_dir, exist_ok=True)
+
+        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        filename = f"Murmur_{ts}_{source}.wav"
+        path = os.path.join(save_dir, filename)
+
+        self.wav_recorder = WavRecorder(sample_rate=RECORD_RATE, channels=1)
+        self.audio.set_record_source(source == "pre")
+        self.audio.set_wav_recorder(self.wav_recorder)
+        self.wav_recorder.start(path)
+        logger.info("[rec] WAV recording started: %s (source=%s)", filename, source)
+
+    def stop_wav_recording(self) -> dict:
+        """Stop WAV recording and return summary."""
+        if not self.wav_recorder or not self.wav_recorder.is_recording:
+            return {"path": None, "seconds": 0, "dropped_frames": 0}
+
+        self.audio.set_wav_recorder(None)
+        result = self.wav_recorder.stop()
+        self.last_recording_path = result.get("path")
+        logger.info("[rec] WAV recording stopped: %.1fs, %s",
+                    result.get("seconds", 0), result.get("path", ""))
+        return result
+
+    def export_mp3(self, wav_path: str, mp3_path: str | None = None) -> str | None:
+        """Convert WAV to MP3 using ffmpeg. Returns mp3 path or None on failure."""
+        if not self.ffmpeg_available:
+            logger.error("[rec] ffmpeg not found, cannot export MP3")
+            return None
+        if not wav_path or not os.path.exists(wav_path):
+            logger.error("[rec] WAV file not found: %s", wav_path)
+            return None
+
+        if mp3_path is None:
+            mp3_path = os.path.splitext(wav_path)[0] + ".mp3"
+
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", wav_path, "-q:a", "2", mp3_path],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0:
+                logger.info("[rec] Exported MP3: %s", mp3_path)
+                return mp3_path
+            else:
+                logger.error("[rec] ffmpeg failed: %s", result.stderr[:200])
+                return None
+        except Exception as e:
+            logger.error("[rec] ffmpeg error: %s", e)
+            return None
+
+    # --- Audio to Text (file transcription) ---
+
+    def transcribe_audio_file(self, input_path: str):
+        """Transcribe an audio file to text in a background thread."""
+        logger.info("[a2t] transcribe_audio_file() called, path=%s", input_path)
+        if self._file_transcription["active"]:
+            logger.warning("[a2t] Already transcribing a file")
+            return
+        if not os.path.isfile(input_path):
+            logger.error("[a2t] File not found: %s", input_path)
+            self._file_transcription["error"] = f"File not found: {input_path}"
+            return
+
+        self._file_transcription = {
+            "active": True,
+            "status": "transcribing",
+            "input_path": input_path,
+            "output_path": "",
+            "error": "",
+            "progress": 0.0,
+        }
+        threading.Thread(
+            target=self._transcribe_file_worker,
+            args=(input_path,),
+            daemon=True,
+            name="file-transcriber",
+        ).start()
+
+    def _transcribe_file_worker(self, input_path: str):
+        """Background worker for file transcription."""
+        try:
+            logger.info("[a2t] Transcribing: %s", os.path.basename(input_path))
+
+            # Transcribe with progress reporting
+            self._file_transcription["status"] = "transcribing"
+            self._file_transcription["progress"] = 0.0
+
+            def on_progress(pct):
+                self._file_transcription["progress"] = round(pct, 1)
+
+            raw_text = self.transcriber.transcribe_file_with_progress(input_path, on_progress)
+
+            if not raw_text:
+                self._file_transcription["status"] = "error"
+                self._file_transcription["error"] = "No speech detected"
+                self._file_transcription["active"] = False
+                return
+
+            # LLM cleanup (if enabled)
+            final_text = raw_text
+            if self.llm_enabled and self.llm:
+                self._file_transcription["status"] = "cleaning"
+                try:
+                    cleaned = self.llm.cleanup(raw_text)
+                    if cleaned:
+                        final_text = cleaned
+                except Exception as e:
+                    logger.warning("[a2t] LLM cleanup failed, using raw: %s", e)
+
+            # Hold result for user to choose save format via UI
+            self._file_transcription["status"] = "done"
+            self._file_transcription["text"] = final_text
+            self._file_transcription["active"] = False
+            logger.info("[a2t] Transcription ready, waiting for save format choice")
+
+        except Exception as e:
+            logger.error("[a2t] Transcription failed: %s", e)
+            self._file_transcription["status"] = "error"
+            self._file_transcription["error"] = str(e)
+            self._file_transcription["active"] = False
+
+    def _format_transcription_md(self, text: str, title: str) -> str:
+        """Use the local LLM to format transcription text as clean markdown."""
+        header = f"# {title}\n\n---\n\n"
+
+        if not self.llm or not self.llm.is_available():
+            logger.info("[a2t] LLM not available, using basic markdown formatting")
+            import re
+            sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+            paragraphs = []
+            for i in range(0, len(sentences), 4):
+                paragraphs.append(" ".join(sentences[i:i + 4]))
+            return header + "\n\n".join(paragraphs) + "\n"
+
+        prompt = (
+            "Format the following transcription as clean, well-structured markdown. "
+            "Break it into logical paragraphs. Add section headings (##) where the topic changes. "
+            "Fix grammar and punctuation but preserve the original meaning and wording. "
+            "Do NOT add any commentary, preamble, or explanation — output ONLY the formatted markdown body."
+        )
+        try:
+            import requests as req
+            resp = req.post(self.llm.url, json={
+                "model": self.llm.model,
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": text},
+                ],
+                "temperature": 0.3,
+                "max_tokens": min(len(text) * 3, 8192),
+            }, timeout=30)
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"].strip()
+            content = self.llm._strip_reasoning(content)
+            if content:
+                logger.info("[a2t] LLM formatted markdown (%d → %d chars)", len(text), len(content))
+                return header + content + "\n"
+        except Exception as e:
+            logger.warning("[a2t] LLM markdown formatting failed: %s — using basic format", e)
+
+        # Fallback: basic paragraph splitting
+        import re
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        paragraphs = []
+        for i in range(0, len(sentences), 4):
+            paragraphs.append(" ".join(sentences[i:i + 4]))
+        return header + "\n\n".join(paragraphs) + "\n"
+
+    def save_transcription(self, fmt: str = "txt") -> dict:
+        """Save the completed transcription to disk in the chosen format."""
+        ft = self._file_transcription
+        if ft["status"] != "done" or "text" not in ft:
+            return {"ok": False, "error": "No transcription to save"}
+
+        ext = fmt if fmt in ("txt", "md") else "txt"
+        transcripts_dir = os.path.join(
+            self.config.project_dir,
+            self.config.cfg.get("transcription", {}).get("save_dir", "Transcriptions"),
+        )
+        os.makedirs(transcripts_dir, exist_ok=True)
+
+        base_name = os.path.splitext(os.path.basename(ft["input_path"]))[0]
+        output_path = os.path.join(transcripts_dir, f"{base_name}.{ext}")
+        with open(output_path, "w", encoding="utf-8") as f:
+            if ext == "md":
+                content = self._format_transcription_md(ft["text"], base_name)
+                f.write(content)
+            else:
+                f.write(ft["text"])
+
+        ft["output_path"] = output_path
+        logger.info("[a2t] Saved → %s", output_path)
+        return {"ok": True, "path": output_path}
+
     # --- Lifecycle ---
 
     def _quit(self):
@@ -703,6 +1082,8 @@ class DictationApp:
             return
         self._shutdown_called = True
 
+        if self.wav_recorder and self.wav_recorder.is_recording:
+            self.stop_wav_recording()
         if self.recording:
             self.recording = False
             self.audio.stop_recording()
@@ -717,21 +1098,24 @@ class DictationApp:
 
     def run(self):
         llm_model = self.config.get("llm_model")
-        logger.info("Whisper streaming dictation ready.")
+        logger.info("Whisper streaming dictation starting...")
         logger.info("Toggle: %s  |  Model: %s  |  Mic: device %s", self.toggle_key.upper(), self.config.get("whisper_model"), self.config.get("mic_device_index"))
         llm_status = f"ON ({llm_model}, mode: {self.current_mode})" if self.llm_enabled else f"OFF (mode: {self.current_mode})"
         logger.info("LLM: %s", llm_status)
         logger.info("Profile: %s  |  Auto-detect: %s", self.current_profile, "ON" if self.window_detector else "OFF")
         logger.info("Voice commands: %s", ", ".join(self.config.get("voice_commands").keys()))
+        vad_cfg = self.config.cfg.get("vad", {})
+        vad_status = "ON (loading...)" if vad_cfg.get("enabled", False) else "OFF (using RMS threshold)"
+        logger.info("VAD: %s", vad_status)
         logger.info("Silence: threshold=%s  pause=%ss  max=%ss\n", self.energy_threshold, self.silence_timeout, self.max_speech_sec)
 
         self._register_hotkey()
         self.audio.start_stream()
         self.tray.start()
 
-        if self.api_server:
-            self.api_server.start()
-            logger.info("API: http://127.0.0.1:%d", self.config.args.port)
+        # Load Whisper + VAD models in background thread
+        threading.Thread(target=self._load_models_async, daemon=True,
+                         name="model-loader").start()
 
         try:
             while not self._stop_event.wait(timeout=0.25):

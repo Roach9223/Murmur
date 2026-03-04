@@ -20,7 +20,9 @@ struct DSPGateState {
     float attack_ms = 5.0f;
     float release_ms = 150.0f;
     bool calibrating = false;
+    bool speech_calibrating = false;
     float calibrated_noise_floor_dbfs = -80.0f;
+    float calibrated_speech_dbfs = -80.0f;
 };
 
 struct DSPCompressorState {
@@ -49,6 +51,7 @@ struct EngineStatus {
     bool push_to_talk = false;
     std::string pending_text;
     bool recording = false;
+    bool model_loading = false;
     std::string hotkey;
 
     std::vector<std::string> mode_names;
@@ -77,6 +80,27 @@ struct EngineStatus {
     DSPGateState gate;
     DSPCompressorState compressor;
     bool spectrum_pre_dsp = false;
+
+    struct WavRecording {
+        bool active = false;
+        std::string path;
+        float seconds = 0.0f;
+        int dropped_frames = 0;
+        std::string source = "post";
+    } wav_recording;
+    bool ffmpeg_available = false;
+    std::string recordings_dir;
+    std::string last_recording_path;
+
+    struct FileTranscription {
+        bool active = false;
+        std::string status = "idle";
+        std::string input_path;
+        std::string output_path;
+        std::string error;
+        float progress = 0.0f;  // 0-100
+    } file_transcription;
+    std::string transcripts_dir;
 };
 
 class EngineClient {
@@ -110,8 +134,19 @@ public:
 
     bool PostDSPConfig(const std::string& json_body);
     bool StartCalibration();
+    bool FinishSilenceCalibration();
+    bool StartSpeechCalibration();
     bool FinishCalibration();
+    std::string FetchCalibrationPrompt();
     bool SetSpectrumSource(bool pre_dsp);
+
+    bool StartWavRecording(const std::string& source = "post");
+    bool StopWavRecording();
+    bool ExportMP3(const std::string& wav_path);
+
+    bool TranscribeFile(const std::string& path, std::string& out_error);
+    bool SaveTranscription(const std::string& format, std::string& out_path);
+    std::vector<std::string> FetchLogTail(int n = 30);
 
 private:
     void PollLoop();

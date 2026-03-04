@@ -1,4 +1,5 @@
 import enum
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -34,6 +35,7 @@ class EngineState:
     last_raw_transcript: str = ""
     last_cleaned_text: str = ""
     audio_rms: float = 0.0
+    vad_speech_prob: float = 0.0
     latency: LatencyMetrics = field(default_factory=LatencyMetrics)
     last_error: str = ""
     pending_text: str = ""
@@ -62,12 +64,18 @@ class EngineState:
             },
             "audio_rms": round(app.audio.live_rms, 6),
             "fft_bins": app.audio.get_cached_fft_bins() if hasattr(app, 'audio') and app.audio._stream else [],
-            "is_speech": self.audio_rms > app.energy_threshold,
+            "is_speech": (self.vad_speech_prob >= app.vad.threshold
+                         if app.vad_enabled and app.vad
+                         else self.audio_rms > app.energy_threshold),
+            "vad_enabled": getattr(app, 'vad_enabled', False),
+            "vad_speech_prob": round(self.vad_speech_prob, 3) if getattr(app, 'vad_enabled', False) else None,
+            "audio_queue_drops": app.audio.queue_drops,
             "errors": self.last_error or None,
             "approval_mode": app.approval_mode,
             "push_to_talk": app.push_to_talk,
             "pending_text": self.pending_text,
             "recording": app.recording,
+            "model_loading": getattr(app, '_model_loading', False),
             "hotkey": app.toggle_key,
             "mode_names": app.config.get_mode_names(),
             "profile_names": app.config.get_profile_names(),
@@ -76,4 +84,26 @@ class EngineState:
             "mic_device_name": app.audio.get_device_name(),
             "dsp": app.audio.get_dsp_state(),
             "spectrum_pre_dsp": app.audio._spectrum_pre_dsp,
+            "wav_recording": {
+                "active": app.wav_recorder.is_recording if app.wav_recorder else False,
+                "path": app.wav_recorder.current_path if app.wav_recorder else "",
+                "seconds": round(app.wav_recorder.seconds_written, 1) if app.wav_recorder else 0,
+                "dropped_frames": app.wav_recorder.dropped_frames if app.wav_recorder else 0,
+                "source": app.record_source,
+            },
+            "ffmpeg_available": getattr(app, 'ffmpeg_available', False),
+            "recordings_dir": os.path.join(
+                app.config.project_dir,
+                app.config.cfg.get("recording", {}).get("save_dir", "Recordings"),
+            ),
+            "last_recording_path": getattr(app, 'last_recording_path', None),
+            "file_transcription": getattr(app, '_file_transcription', {
+                "active": False, "status": "idle",
+                "input_path": "", "output_path": "", "error": "",
+                "progress": 0.0,
+            }),
+            "transcripts_dir": os.path.join(
+                app.config.project_dir,
+                app.config.cfg.get("transcription", {}).get("save_dir", "Transcriptions"),
+            ),
         }

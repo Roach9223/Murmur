@@ -115,7 +115,7 @@ Real-time DSP chain running in the sounddevice callback:
 
 ### FFT Spectrum Analyzer — DONE
 
-- 64-bin log-spaced FFT (50Hz–12kHz) with Hann window and energy compensation
+- 128-bin log-spaced FFT (20Hz–20kHz) with Blackman-Harris window, interpolation for sparse bands, DC rejection
 - 20Hz background thread, dual ring buffers (pre/post-DSP toggle)
 - C++ UI adds: EMA smoothing, peak hold, noise floor tracking, phase-based coloring, articulation band highlighting
 

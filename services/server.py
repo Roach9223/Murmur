@@ -40,6 +40,19 @@ class SetMicRequest(BaseModel):
 class CalibrateRequest(BaseModel):
     action: str  # "start" or "finish"
 
+class RecordStartRequest(BaseModel):
+    source: str = "post"  # "post" or "pre"
+
+class ExportMP3Request(BaseModel):
+    wav_path: str
+    mp3_path: str | None = None
+
+class TranscribeFileRequest(BaseModel):
+    path: str
+
+class SaveTranscriptionRequest(BaseModel):
+    format: str = "txt"  # "txt" or "md"
+
 
 # --- Route factory ---
 
@@ -185,11 +198,19 @@ def create_app(engine) -> FastAPI:
             raise HTTPException(400, "Gate not enabled")
         if req.action == "start":
             chain.gate.start_calibration()
-            return {"ok": True, "message": "Calibrating... keep silent for 1.5s"}
+            return {"ok": True, "message": "Stay quiet — measuring room noise..."}
+        elif req.action == "finish_silence":
+            result = chain.gate.finish_silence_calibration()
+            if result is None:
+                raise HTTPException(400, "Silence calibration failed (speech detected or no data)")
+            return {"ok": True, "noise_floor_dbfs": result["noise_floor_dbfs"]}
+        elif req.action == "start_speech":
+            chain.gate.start_speech_calibration()
+            return {"ok": True, "message": "Listening for speech..."}
         elif req.action == "finish":
             result = chain.gate.finish_calibration()
             if result is None:
-                raise HTTPException(400, "Calibration failed (speech detected or no data)")
+                raise HTTPException(400, "Calibration failed (no data)")
             try:
                 chain.gate.configure(
                     open_threshold_dbfs=result["open_threshold_dbfs"],
@@ -199,7 +220,89 @@ def create_app(engine) -> FastAPI:
                 raise HTTPException(400, str(e))
             engine._save_dsp_config()
             return {"ok": True, "thresholds": result}
-        raise HTTPException(400, "action must be 'start' or 'finish'")
+        raise HTTPException(400, "action must be 'start', 'finish_silence', 'start_speech', or 'finish'")
+
+    @app.get("/calibrate/prompt")
+    def calibrate_prompt():
+        """Generate a random calibration sentence via local LLM, or return fallback."""
+        import random
+        fallbacks = [
+            "The quick brown fox jumps over the lazy dog near the river bank.",
+            "Please check the microphone settings before starting the recording session.",
+            "Testing one two three, the audio levels should be clearly visible now.",
+            "She sells seashells by the seashore on a bright and sunny afternoon.",
+            "The five boxing wizards jump quickly across the moonlit garden path.",
+        ]
+        llm = getattr(engine, "llm", None)
+        if llm and llm.is_available():
+            try:
+                import requests as req
+                resp = req.post(llm.url, json={
+                    "model": llm.model,
+                    "messages": [
+                        {"role": "system", "content": "Generate a single natural English sentence (15-25 words) for a user to read aloud during microphone calibration. The sentence should use a variety of sounds and be easy to read. Output ONLY the sentence, nothing else."},
+                        {"role": "user", "content": "Generate a calibration sentence."},
+                    ],
+                    "temperature": 1.0,
+                    "max_tokens": 60,
+                }, timeout=5)
+                resp.raise_for_status()
+                content = resp.json()["choices"][0]["message"]["content"].strip()
+                content = content.strip('"\'')
+                if 10 < len(content) < 200:
+                    return {"ok": True, "prompt": content, "source": "llm"}
+            except Exception:
+                pass
+        return {"ok": True, "prompt": random.choice(fallbacks), "source": "fallback"}
+
+    # --- WAV Recording ---
+
+    @app.post("/record/start")
+    def record_start(req: RecordStartRequest):
+        if req.source not in ("pre", "post"):
+            raise HTTPException(400, "source must be 'pre' or 'post'")
+        if engine.wav_recorder and engine.wav_recorder.is_recording:
+            raise HTTPException(409, "Already recording")
+        engine.start_wav_recording(source=req.source)
+        return {"ok": True, "source": req.source}
+
+    @app.post("/record/stop")
+    def record_stop():
+        if not engine.wav_recorder or not engine.wav_recorder.is_recording:
+            raise HTTPException(400, "Not recording")
+        result = engine.stop_wav_recording()
+        return {"ok": True, **result}
+
+    @app.post("/record/export_mp3")
+    def record_export_mp3(req: ExportMP3Request):
+        if not engine.ffmpeg_available:
+            raise HTTPException(400, "ffmpeg not available")
+        mp3_path = engine.export_mp3(req.wav_path, req.mp3_path)
+        if mp3_path is None:
+            raise HTTPException(500, "MP3 export failed")
+        return {"ok": True, "mp3_path": mp3_path}
+
+    # --- File Transcription (Audio to Text) ---
+
+    @app.post("/transcribe/file")
+    def transcribe_file(req: TranscribeFileRequest):
+        logger.info("[a2t] /transcribe/file called, path=%s", req.path)
+        logger.info("[a2t] file exists=%s, active=%s", os.path.isfile(req.path), engine._file_transcription["active"])
+        if engine._file_transcription["active"]:
+            raise HTTPException(409, "Already transcribing a file")
+        if not os.path.isfile(req.path):
+            raise HTTPException(400, f"File not found: {req.path}")
+        engine.transcribe_audio_file(req.path)
+        return {"ok": True, "job_started": True}
+
+    @app.post("/transcribe/save")
+    def transcribe_save(req: SaveTranscriptionRequest):
+        if req.format not in ("txt", "md"):
+            raise HTTPException(400, "format must be 'txt' or 'md'")
+        result = engine.save_transcription(req.format)
+        if not result["ok"]:
+            raise HTTPException(400, result["error"])
+        return {"ok": True, "path": result["path"]}
 
     # --- Config ---
 
@@ -237,6 +340,35 @@ def create_app(engine) -> FastAPI:
                 except ValueError as e:
                     raise HTTPException(400, str(e))
                 engine._save_dsp_config()
+
+        # VAD config updates
+        if "vad" in body:
+            vad_updates = body["vad"]
+            if "enabled" in vad_updates:
+                if vad_updates["enabled"] and not engine.vad_enabled:
+                    # Load VAD model on-demand
+                    from services.vad import VoiceActivityDetector
+                    vad_cfg = engine.config.cfg.get("vad", {})
+                    vad_cfg.update(vad_updates)
+                    engine.vad = VoiceActivityDetector(
+                        threshold=vad_cfg.get("threshold", 0.5),
+                        min_silence_ms=vad_cfg.get("min_silence_ms", 300),
+                        speech_pad_ms=vad_cfg.get("speech_pad_ms", 30),
+                        window_size=vad_cfg.get("window_size", 512),
+                    )
+                    if engine.vad.load_model():
+                        engine.vad_enabled = True
+                    else:
+                        engine.vad = None
+                elif not vad_updates["enabled"]:
+                    engine.vad_enabled = False
+            # Update threshold/timing params at runtime
+            if engine.vad is not None:
+                try:
+                    engine.vad.configure(**{k: v for k, v in vad_updates.items() if k != "enabled"})
+                except ValueError as e:
+                    raise HTTPException(400, str(e))
+            engine.config.cfg.setdefault("vad", {}).update(vad_updates)
 
         # Spectrum source toggle
         if "spectrum_source" in body:

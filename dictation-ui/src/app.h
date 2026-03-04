@@ -37,6 +37,16 @@ private:
     bool m_calWaiting = false;
     bool m_dspLocked = true;  // Prevent accidental slider changes
 
+    // Calibration popup state
+    bool m_showCalPopup = false;
+    int m_calPhase = 0;          // 0=silence, 1=speech, 2=done, -1=error
+    std::string m_calPrompt;     // LLM sentence for user to read
+    float m_calNoiseFloor = 0;
+    float m_calSpeechLevel = 0;
+    float m_calOpenThresh = 0;
+    float m_calCloseThresh = 0;
+    std::string m_calError;
+
     // VU meter peak hold
     float m_vuPeakDbfs = -80.0f;
 
@@ -44,4 +54,16 @@ private:
     float m_stateColor[4] = {0.5f, 0.5f, 0.5f, 1.0f};
     std::string m_lastOutputText;
     double m_outputFlashTime = 0.0;
+
+    // WAV recording UI state
+    double m_wavRecordStartTime = 0.0;
+    std::string m_lastRecordingPath;
+    int m_recordSourceIdx = 0;  // 0=Post-DSP, 1=Pre-DSP
+
+    // Audio to Text UI state
+    std::string m_lastTranscriptStatus;  // "Done! ..." or error
+    double m_transcriptFlashTime = 0.0;
+    bool m_showTranscriptionPopup = false;
+    std::vector<std::string> m_transcriptLogLines;
+    double m_lastLogFetchTime = 0.0;
 };

@@ -72,20 +72,20 @@
   "dsp": {
     "noise_gate": {
       "enabled": true,
-      "open_threshold_dbfs": -45.0,
-      "close_threshold_dbfs": -56.0,
-      "floor_db": -62.5,
+      "open_threshold_dbfs": -55.5,
+      "close_threshold_dbfs": -62.099998474121094,
+      "floor_db": -56.29999923706055,
       "hold_ms": 100.0,
       "attack_ms": 5.0,
       "release_ms": 150.0
     },
     "compressor": {
       "enabled": false,
-      "threshold_dbfs": -15.0,
-      "ratio": 2.0,
+      "threshold_dbfs": -43.599998474121094,
+      "ratio": 4.199999809265137,
       "attack_ms": 5.0,
       "release_ms": 100.0,
-      "makeup_gain_db": 0.0
+      "makeup_gain_db": 2.700000047683716
     }
   },
   "auto_detect": {
