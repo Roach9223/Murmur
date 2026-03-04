@@ -20,6 +20,36 @@ If you want to talk instead of type, this is for you.
 
 ---
 
+<details>
+<summary><strong>Table of Contents</strong></summary>
+
+- [What Is This?](#what-is-this)
+- [How It Works](#how-it-works-quick-version)
+- [Why I Made This](#why-i-made-this)
+- [What It Actually Does](#what-it-actually-does)
+  - [Voice to Text](#-voice--text-whisper-large-v3)
+  - [Cleanup Modes](#-cleanup-modes-optional)
+  - [Real-Time DSP](#-real-time-dsp-because-noise-is-annoying)
+  - [Desktop UI](#-c-desktop-ui)
+  - [Profiles + Auto-Detect](#-profiles--auto-detect)
+  - [Voice Commands](#-voice-commands)
+  - [Approval Mode](#-approval-mode)
+  - [Push-to-Talk](#-push-to-talk)
+- [What This Is NOT](#what-this-is-not)
+- [Who This Is For](#who-this-is-for)
+- [The Stack](#the-stack-because-youll-ask)
+- [Requirements](#requirements)
+- [**Quick Start (Install)**](#-quick-start)
+- [Configuration](#configuration)
+- [Building from Source](#building-from-source)
+- [HTTP API](#http-api)
+- [Architecture](#architecture)
+- [License](#license)
+
+</details>
+
+---
+
 ## What Is This?
 
 Murmur is a local voice-to-text engine that types directly into whatever window you have focused.
@@ -309,13 +339,23 @@ Any OpenAI-compatible local model works, but these are tested and tuned for dict
 
 ---
 
-## Running It
+## Quick Start
+
+> [!IMPORTANT]
+> **Requirements:** Windows 10/11 + NVIDIA GPU with CUDA support (4GB+ VRAM).
+> For cleanup modes (Clean/Prompt/Dev): [LM Studio](https://lmstudio.ai) running at localhost:1234 with a model loaded. Raw mode works without it.
 
 ### Option 1: Murmur.exe (Recommended)
 
-Download the `Murmur/` folder. Run `Murmur.exe`.
+> [!TIP]
+> **Fastest way to get started.** No Python, no dependencies, no setup.
 
-It auto-launches the engine in the background. Press F1 (or click the banner). Talk. Pause. It types.
+1. Download or clone this repo
+2. Open the `Murmur/` folder
+3. Run `Murmur.exe`
+4. Press **F1** (or click the banner). Talk. Pause. It types.
+
+The engine launches automatically in the background. The first run downloads the Whisper model (~3GB).
 
 ### Option 2: From Source
 
@@ -336,6 +376,9 @@ python app.py
 # Skip LLM cleanup:
 python app.py --no-cleanup
 ```
+
+> [!NOTE]
+> Requires Python 3.11+ and an NVIDIA GPU with CUDA toolkit installed.
 
 ### CLI Flags
 
