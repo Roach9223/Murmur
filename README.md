@@ -91,6 +91,9 @@ That's it.
 > - For cleanup modes (Clean/Prompt/Dev): [LM Studio](https://lmstudio.ai) running at `localhost:1234` with a model loaded. Raw mode works without it.
 > - Optional: [ffmpeg](https://ffmpeg.org/) on PATH (only needed for MP3 export from WAV recordings)
 
+> [!NOTE]
+> **Windows only.** Murmur uses Windows-native APIs throughout — SendInput for text injection, DirectX 11 for the UI, WASAPI for audio capture, and Win32 for hotkey suppression and window detection. These aren't abstractions we can swap out; they're deliberate choices for reliability on this platform.
+
 ### Option 1: Pre-Built (Recommended)
 
 > [!TIP]
