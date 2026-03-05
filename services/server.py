@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 # --- Request models ---
