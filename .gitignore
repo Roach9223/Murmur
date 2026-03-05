@@ -24,6 +24,9 @@ Murmur/*.dll
 Murmur/models/
 Murmur/logs/
 Murmur/imgui.ini
+Murmur/Recordings/
+Murmur/Transcriptions/
+Murmur/prompts/prompts/
 
 # IDE / tools
 .vs/
@@ -32,6 +35,9 @@ Murmur/imgui.ini
 .claude/
 *.swp
 *.swo
+
+# Internal docs (not published)
+docs/plans/
 
 # OS
 Thumbs.db

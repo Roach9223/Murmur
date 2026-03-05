@@ -6,7 +6,7 @@ A fully local Windows dictation app for developers and AI workflows. Press F1, s
 
 Not just speech-to-text. It's a **voice interface layer** — speech goes in, developer-grade prompts come out.
 
-See `docs/gameplan.md` for the full product vision and phased roadmap.
+See `docs/plans/gameplan.md` (local only, not tracked in git) for the full product vision and phased roadmap.
 
 ## Current State
 
@@ -25,7 +25,7 @@ See `docs/gameplan.md` for the full product vision and phased roadmap.
 - System tray icon with Mode/Profile submenus, auto-detect toggle, approval/push-to-talk toggles
 - Unicode text injection via `keyboard.write()` (SendInput + KEYEVENTF_UNICODE)
 - Whisper large-v3 on CUDA with anti-repetition settings
-- **11 independent services** — audio, dsp, transcriber, commands, output, llm, config, tray, window_detect, engine_state, server
+- **13 independent services** — audio, dsp, transcriber, commands, output, llm, config, tray, window_detect, engine_state, server, recording, vad
 - **Config-driven** — all tuning knobs in config.json, system prompts in prompts/
 - **Reliability**: stdlib logging (RotatingFileHandler), error handling with graceful fallback, audio stream auto-recovery, thread safety (`_state_lock`), idempotent shutdown with Windows console handler
 - **HTTP API** (opt-in via `--server`): FastAPI + uvicorn on `127.0.0.1:8899`, 20+ endpoints for full external control
@@ -57,6 +57,8 @@ ai-text-to-type/
     window_detect.py            # ActiveWindowDetector — foreground window polling + profile matching
     engine_state.py             # EnginePhase enum, LatencyMetrics, EngineState dataclass
     server.py                   # FastAPI app (create_app factory) + APIServer (uvicorn daemon thread)
+    recording.py                # WAV recording service
+    vad.py                      # Voice activity detection
   config.json                   # tuning knobs + profiles + modes + DSP + auto-detect rules
   prompts/
     clean_system.txt            # Clean mode: filler removal, grammar fix
@@ -67,7 +69,6 @@ ai-text-to-type/
   Murmur/                       # distributable app folder
     Murmur.exe                  # C++ ImGui UI — auto-launches engine on startup
     config.json                 # user configuration
-    README.txt                  # user-facing documentation
     brotlicommon.dll            # runtime dependency (Brotli)
     brotlidec.dll               # runtime dependency (Brotli)
     engine/                     # PyInstaller-bundled Python engine
@@ -81,9 +82,11 @@ ai-text-to-type/
     vcpkg.json
     src/                        # main.cpp, app.cpp/h, engine_client, engine_process, dx11_helpers
   docs/
-    gameplan.md                 # consolidated product & engineering plan
-    gameplan-ui-full-cpp.md     # full C++ rewrite plan (reference, not chosen)
-    summary.md                  # detailed project summary
+    screenshots/
+      murmur-ui.png             # UI screenshot for README
+  assets/
+    logo-murmur.png             # project logo
+    favicon.ico                 # app icon
   build.bat                     # full build script (PyInstaller + CMake + deploy)
   murmur-engine.spec            # PyInstaller spec for bundling the engine
   CLAUDE.md                     # this file
@@ -91,7 +94,6 @@ ai-text-to-type/
   LICENSE                       # MIT License
   requirements.txt              # pinned dependencies
   start_dictation.bat           # one-click launcher (runs app.py)
-  whisper_toggle_dictation.py   # legacy monolith (reference only)
   venv/                         # Python virtual environment
 ```
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo-murmur.png" alt="Murmur" width="200">
+  <img src="assets/logo-murmur.png" alt="Murmur" width="200">
 </p>
 
 # Murmur
@@ -519,7 +519,7 @@ C++ UI (ImGui + DX11, controls, spectrum, status)
 
 8-phase state machine: IDLE → LISTENING → RECORDING → TRANSCRIBING → CLEANING → TYPING (or PENDING_APPROVAL) → back to LISTENING. Any failure → ERROR (logged, loop continues).
 
-See [CLAUDE.md](CLAUDE.md) for the deep technical docs, and [docs/gameplan.md](docs/gameplan.md) for the engineering roadmap.
+See [CLAUDE.md](CLAUDE.md) for the deep technical docs.
 
 ---
 
