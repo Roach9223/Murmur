@@ -2,8 +2,8 @@
 setlocal
 
 set PROJECT_DIR=%~dp0
-set DIST_DIR=F:\tmp\murmur-dist
-set BUILD_DIR=F:\tmp\murmur-build
+set DIST_DIR=%TEMP%\murmur-dist
+set BUILD_DIR=%TEMP%\murmur-build
 set OUTPUT_DIR=%PROJECT_DIR%Murmur
 
 :: Parse flags
@@ -36,7 +36,11 @@ if %UI_ONLY%==1 (
 
 :: Step 2: Build C++ UI with CMake (Release)
 echo [2/3] Building C++ UI (CMake Release)...
-set VCPKG_ROOT=F:\vcpkg
+if not defined VCPKG_ROOT (
+    echo ERROR: VCPKG_ROOT environment variable is not set.
+    echo Set it to your vcpkg installation directory (e.g., set VCPKG_ROOT=C:\vcpkg)
+    exit /b 1
+)
 cd /d "%PROJECT_DIR%dictation-ui"
 :: Only configure if not already configured
 if not exist "build\release\CMakeCache.txt" (
@@ -80,9 +84,8 @@ if %UI_ONLY%==1 (
     xcopy "%DIST_DIR%\murmur-engine" "%OUTPUT_DIR%\engine\" /E /I /Q
 )
 
-:: Config + prompts + docs
+:: Config + prompts
 copy /Y "%PROJECT_DIR%config.json" "%OUTPUT_DIR%\config.json"
-copy /Y "%PROJECT_DIR%Murmur\README.txt" "%OUTPUT_DIR%\README.txt" 2>nul
 xcopy "%PROJECT_DIR%prompts\*" "%OUTPUT_DIR%\prompts\" /I /Q /Y
 
 echo.

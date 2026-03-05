@@ -94,13 +94,10 @@ That's it.
 ### Option 1: Pre-Built (Recommended)
 
 > [!TIP]
-> **No Python, no dependencies, no build steps.** Just run the exe.
+> **No Python, no dependencies, no build steps.** Just download and run.
 
-1. Clone or download this repo:
-   ```bash
-   git clone https://github.com/Roach9223/Murmur.git
-   ```
-2. Navigate into `Murmur/Murmur/` (the pre-built distribution folder inside the repo)
+1. Download the latest release from [**Releases**](https://github.com/Roach9223/Murmur/releases)
+2. Extract the zip
 3. Run **`Murmur.exe`**
 4. Press **F1** (or click the banner). Talk. Pause. It types.
 
@@ -119,7 +116,7 @@ cd Murmur
 
 python -m venv venv
 venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.txt  # includes CUDA PyTorch index
 ```
 
 Then run the engine:
@@ -450,26 +447,53 @@ DSP slider changes save automatically. Other config changes take effect on engin
 
 ## Building from Source
 
-### Python Engine (PyInstaller)
+`build.bat` builds everything and assembles the `Murmur/` distribution folder. A fresh clone has no `Murmur/` folder — the build creates it.
+
+### Prerequisites
+
+- **Python 3.11+** with venv
+- **NVIDIA CUDA Toolkit 12.1+**
+- **Visual Studio 2022+** (C++ Desktop Development workload)
+- **CMake 3.21+**
+- **vcpkg** with the `VCPKG_ROOT` environment variable set
+- **PyInstaller** (`pip install pyinstaller`) — for bundling the Python engine
+
+### Full Build
+
+```bash
+# Set up Python environment first
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+pip install pyinstaller
+
+# Run full build
+build.bat
+
+# Or rebuild just the C++ UI (skips PyInstaller):
+build.bat --ui-only
+```
+
+> [!NOTE]
+> `build.bat` uses `%TEMP%` for intermediate build files and reads `%VCPKG_ROOT%` for the vcpkg toolchain.
+> The final output goes to `Murmur/` in the repo root.
+
+### Building Components Individually
+
+**Python engine only** (PyInstaller):
 
 ```bash
 venv\Scripts\activate
-pyinstaller murmur-engine.spec --noconfirm --distpath F:\tmp\murmur_dist --workpath F:\tmp\murmur_build
+pyinstaller murmur-engine.spec --noconfirm
 ```
 
-### C++ UI (CMake + vcpkg)
-
-Requires Visual Studio 2022+, CMake 3.21+, vcpkg with `VCPKG_ROOT` set.
+**C++ UI only** (CMake + vcpkg):
 
 ```bash
 cd dictation-ui
 cmake --preset release
 cmake --build build/release --config Release
 ```
-
-### Full Build
-
-`build.bat` automates everything: PyInstaller engine, CMake UI, assembly of the `Murmur/` folder.
 
 ---
 
