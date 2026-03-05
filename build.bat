@@ -58,6 +58,8 @@ echo [3/3] Assembling Murmur folder...
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 if not exist "%OUTPUT_DIR%\models" mkdir "%OUTPUT_DIR%\models"
 if not exist "%OUTPUT_DIR%\logs" mkdir "%OUTPUT_DIR%\logs"
+if not exist "%OUTPUT_DIR%\Recordings" mkdir "%OUTPUT_DIR%\Recordings"
+if not exist "%OUTPUT_DIR%\Transcriptions" mkdir "%OUTPUT_DIR%\Transcriptions"
 
 :: C++ UI exe + DLLs (always copy)
 copy /Y "%PROJECT_DIR%dictation-ui\build\release\Release\Murmur.exe" "%OUTPUT_DIR%\Murmur.exe"
@@ -81,7 +83,7 @@ if %UI_ONLY%==1 (
 :: Config + prompts + docs
 copy /Y "%PROJECT_DIR%config.json" "%OUTPUT_DIR%\config.json"
 copy /Y "%PROJECT_DIR%Murmur\README.txt" "%OUTPUT_DIR%\README.txt" 2>nul
-xcopy "%PROJECT_DIR%prompts" "%OUTPUT_DIR%\prompts\" /E /I /Q /Y
+xcopy "%PROJECT_DIR%prompts\*" "%OUTPUT_DIR%\prompts\" /I /Q /Y
 
 echo.
 echo === Build complete ===

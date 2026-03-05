@@ -66,16 +66,7 @@ ai-text-to-type/
     dev_system.txt              # Dev mode: structured tasks/bullet lists
   logs/                         # RotatingFileHandler output (dictation.log, 2MB, 3 backups)
   models/                       # Whisper model cache (downloaded on first run)
-  Murmur/                       # distributable app folder
-    Murmur.exe                  # C++ ImGui UI — auto-launches engine on startup
-    config.json                 # user configuration
-    brotlicommon.dll            # runtime dependency (Brotli)
-    brotlidec.dll               # runtime dependency (Brotli)
-    engine/                     # PyInstaller-bundled Python engine
-      app.exe                   # bundled engine executable
-      prompts/                  # system prompt files
-    models/                     # Whisper model cache
-    logs/                       # runtime logs
+  Murmur/                       # built by build.bat — not tracked (see .gitignore)
   dictation-ui/                 # C++ UI source (CMake + vcpkg)
     CMakeLists.txt
     CMakePresets.json

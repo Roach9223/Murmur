@@ -17,16 +17,7 @@ models/
 imgui.ini
 
 # Murmur distributable (built with build.bat, distributed via GitHub Releases)
-Murmur/engine/
-Murmur/Murmur.exe
-Murmur/DictationUI.exe
-Murmur/*.dll
-Murmur/models/
-Murmur/logs/
-Murmur/imgui.ini
-Murmur/Recordings/
-Murmur/Transcriptions/
-Murmur/prompts/prompts/
+Murmur/
 
 # IDE / tools
 .vs/
@@ -42,3 +33,6 @@ docs/plans/
 # OS
 Thumbs.db
 desktop.ini
+
+# Unused screenshots
+docs/screenshots/Untitled.png
