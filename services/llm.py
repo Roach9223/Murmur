@@ -127,6 +127,13 @@ class LlamaCppBackend(LLMBackend):
         self._session.close()
 
 
+_REFUSAL_RE = re.compile(
+    r"(?i)^(I cannot|I can't|I'm unable|I am unable|I'm sorry|"
+    r"Sorry,? I|I apologize|I don't think I|I must decline|"
+    r"I'm not able|As an AI|I am not able)"
+)
+
+
 class LLMEnhancer:
     def __init__(self, model: str, system_prompt: str,
                  temperature: float, max_tokens: int, timeout: int,
@@ -173,10 +180,11 @@ class LLMEnhancer:
             return text
         if not self._resolved_model:
             self._resolve_model()
+        wrapped = f"[TRANSCRIPTION]\n{text}\n[/TRANSCRIPTION]"
         try:
             content = self.backend.complete(
                 system_prompt=self.system_prompt,
-                user_text=text,
+                user_text=wrapped,
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
@@ -186,6 +194,12 @@ class LLMEnhancer:
                 content = self._strip_reasoning(content)
             else:
                 logger.warning("  [LLM] empty response — using raw text")
+                return text
+
+            # Refusal detection — if model refused, fall back to raw text
+            if _REFUSAL_RE.match(content):
+                logger.warning("  [LLM] refusal detected (%s) — using raw text",
+                               content[:60])
                 return text
 
             # Tighter hallucination guard

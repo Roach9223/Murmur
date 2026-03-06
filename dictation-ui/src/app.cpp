@@ -42,6 +42,14 @@ void DictationApp::Render()
     if (ImGui::BeginMenuBar()) {
         // --- File menu ---
         if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("View Log")) {
+                std::string logPath = EngineProcess::DiscoverEngineDir() + "\\logs\\dictation.log";
+                ShellExecuteA(NULL, "open", logPath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+            }
+            if (ImGui::MenuItem("Clear Log")) {
+                m_engine.ClearLogs();
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("Restart Engine")) {
                 m_process.Terminate(2000);
                 m_process.Launch();

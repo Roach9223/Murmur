@@ -679,7 +679,8 @@ class DictationApp:
             self.engine_state.last_error = str(e)
             return
         type_ms = (time.perf_counter() - t0) * 1000.0
-        logger.info("  >> typed")
+        logger.info("  >> typed  [transcribe=%dms cleanup=%dms type=%dms]",
+                    transcribe_ms, cleanup_ms, type_ms)
 
         # --- Update latency metrics ---
         self.engine_state.latency = LatencyMetrics(

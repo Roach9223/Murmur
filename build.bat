@@ -17,6 +17,18 @@ if %UI_ONLY%==1 (
 )
 echo.
 
+:: Kill running Murmur processes before building
+tasklist /FI "IMAGENAME eq Murmur.exe" 2>NUL | %SystemRoot%\System32\find.exe /I "Murmur.exe" >NUL && (
+    echo Stopping running Murmur.exe...
+    taskkill /F /IM Murmur.exe >NUL 2>&1
+    timeout /t 2 /nobreak >NUL
+)
+tasklist /FI "IMAGENAME eq murmur-engine.exe" 2>NUL | %SystemRoot%\System32\find.exe /I "murmur-engine.exe" >NUL && (
+    echo Stopping running murmur-engine.exe...
+    taskkill /F /IM murmur-engine.exe >NUL 2>&1
+    timeout /t 2 /nobreak >NUL
+)
+
 :: Step 1: Build Python engine with PyInstaller (skip with --ui-only)
 if %UI_ONLY%==1 (
     echo [1/3] Skipping Python engine --ui-only
@@ -81,7 +93,7 @@ if %UI_ONLY%==1 (
 ) else (
     :: Full build: always refresh engine
     if exist "%OUTPUT_DIR%\engine\" rmdir /s /q "%OUTPUT_DIR%\engine"
-    xcopy "%DIST_DIR%\murmur-engine" "%OUTPUT_DIR%\engine\" /E /I /Q
+    xcopy "%DIST_DIR%\murmur-engine" "%OUTPUT_DIR%\engine\" /E /I /Q /Y
 )
 
 :: Config + prompts

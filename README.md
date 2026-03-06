@@ -71,6 +71,28 @@ For file transcription, it runs Whisper over your audio file with progress track
 > [!NOTE]
 > **Windows only.** Murmur uses Windows-native APIs throughout — SendInput for text injection, DirectX 11 for the UI, WASAPI for audio capture, and Win32 for hotkey suppression and window detection.
 
+<details>
+<summary><strong>Recommended LM Studio Settings for Qwen3-4B</strong></summary>
+
+<br>
+
+<p align="center">
+  <img src="docs/screenshots/qwen3-specs.png" alt="LM Studio settings for Qwen3-4B" width="700">
+</p>
+
+These settings are tuned for dictation workloads — short inputs, fast responses, minimal resource usage:
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| **Context Length** | 2048 | Dictation chunks are short — halves KV cache memory vs default |
+| **GPU Offload** | Max (36 layers) | Model is 2.71 GB; RTX 4090 has 24 GB — all layers on GPU |
+| **Eval Batch Size** | 2048 | Full prompt prefilled in one pass — faster time-to-first-token |
+| **Max Concurrent Predictions** | 1 | Single user — frees KV cache, removes scheduling overhead |
+| **Flash Attention** | ON | Faster attention computation |
+| **Keep Model in Memory** | ON | No reload delay between requests |
+
+</details>
+
 ### Option 1: Pre-Built (Recommended)
 
 > [!TIP]
@@ -161,6 +183,25 @@ Runs locally on your GPU using [faster-whisper](https://github.com/SYSTRAN/faste
 Speech detection uses **Silero VAD** (neural network). Major upgrade over simple volume thresholds — fewer false triggers, cleaner segmentation. Falls back to energy-threshold detection if VAD isn't available.
 
 You speak normally. It segments on silence (configurable threshold + timeout). Transcribes under 500ms per chunk on an RTX 4090.
+
+<details>
+<summary><strong>Whisper Model Comparison</strong></summary>
+
+<br>
+
+Murmur defaults to `large-v3` for best accuracy. You can switch models by changing `whisper_model` in `config.json`.
+
+| | large-v3 | large-v3-turbo |
+|---|---|---|
+| **Parameters** | 1.55B | 809M |
+| **Decoder layers** | 32 | 4 |
+| **Speed (RTX 4090)** | ~1000ms / 15s chunk | ~400-600ms / 15s chunk |
+| **Accuracy** | Best | Slightly lower on accented/noisy speech |
+| **VRAM** | ~3 GB | ~1.5 GB |
+
+Both are supported by faster-whisper out of the box. The turbo variant is a good option if you need lower latency or have limited VRAM. For clean English speech, the accuracy difference is negligible (<1% WER).
+
+</details>
 
 ### Audio-to-Text File Transcription
 
