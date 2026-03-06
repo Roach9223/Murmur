@@ -5,6 +5,7 @@ import logging
 import logging.handlers
 import shutil
 import subprocess
+import textwrap
 import time
 import threading
 import queue
@@ -19,7 +20,7 @@ from services.dsp import NoiseGate, Compressor, DSPChain
 from services.transcriber import TranscriptionEngine
 from services.commands import CommandRouter
 from services.output import OutputInjector
-from services.llm import LLMEnhancer
+from services.llm import LLMEnhancer, LMStudioBackend, LlamaCppBackend
 from services.tray import TrayService
 from services.window_detect import ActiveWindowDetector
 from services.engine_state import EngineState, EnginePhase, LatencyMetrics
@@ -104,13 +105,31 @@ class DictationApp:
         )
 
         # LLM — always create (it's just an HTTP client), mode controls whether it's used
+        backend_cfg = self.config.cfg.get("llm_backend", {})
+        backend_type = backend_cfg.get("type", "lmstudio")
+        llm_timeout = backend_cfg.get("timeout", LLM_TIMEOUT)
+
+        if backend_type == "llamacpp":
+            cpp_cfg = backend_cfg.get("llamacpp", {})
+            backend = LlamaCppBackend(
+                base_url=cpp_cfg.get("url", "http://localhost:8080"),
+                cache_prompt=cpp_cfg.get("cache_prompt", True),
+                chat_template=cpp_cfg.get("chat_template", "chatml"),
+            )
+        else:
+            lms_cfg = backend_cfg.get("lmstudio", {})
+            backend = LMStudioBackend(
+                url=lms_cfg.get("url", LLM_URL),
+                cache_prompt=lms_cfg.get("cache_prompt", True),
+            )
+
         self.llm = LLMEnhancer(
-            url=LLM_URL,
             model=self.config.get("llm_model"),
             system_prompt="",
             temperature=0.1,
             max_tokens=500,
-            timeout=LLM_TIMEOUT,
+            timeout=llm_timeout,
+            backend=backend,
         )
 
         # State
@@ -978,16 +997,8 @@ class DictationApp:
                 self._file_transcription["active"] = False
                 return
 
-            # LLM cleanup (if enabled)
+            # Store raw Whisper text — LLM formatting happens during save with proper chunking
             final_text = raw_text
-            if self.llm_enabled and self.llm:
-                self._file_transcription["status"] = "cleaning"
-                try:
-                    cleaned = self.llm.cleanup(raw_text)
-                    if cleaned:
-                        final_text = cleaned
-                except Exception as e:
-                    logger.warning("[a2t] LLM cleanup failed, using raw: %s", e)
 
             # Hold result for user to choose save format via UI
             self._file_transcription["status"] = "done"
@@ -1001,78 +1012,197 @@ class DictationApp:
             self._file_transcription["error"] = str(e)
             self._file_transcription["active"] = False
 
-    def _format_transcription_md(self, text: str, title: str) -> str:
-        """Use the local LLM to format transcription text as clean markdown."""
-        header = f"# {title}\n\n---\n\n"
-
-        if not self.llm or not self.llm.is_available():
-            logger.info("[a2t] LLM not available, using basic markdown formatting")
-            import re
-            sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-            paragraphs = []
-            for i in range(0, len(sentences), 4):
-                paragraphs.append(" ".join(sentences[i:i + 4]))
-            return header + "\n\n".join(paragraphs) + "\n"
-
-        prompt = (
-            "Format the following transcription as clean, well-structured markdown. "
-            "Break it into logical paragraphs. Add section headings (##) where the topic changes. "
-            "Fix grammar and punctuation but preserve the original meaning and wording. "
-            "Do NOT add any commentary, preamble, or explanation — output ONLY the formatted markdown body."
-        )
-        try:
-            import requests as req
-            resp = req.post(self.llm.url, json={
-                "model": self.llm.model,
-                "messages": [
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": text},
-                ],
-                "temperature": 0.3,
-                "max_tokens": min(len(text) * 3, 8192),
-            }, timeout=30)
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
-            content = self.llm._strip_reasoning(content)
-            if content:
-                logger.info("[a2t] LLM formatted markdown (%d → %d chars)", len(text), len(content))
-                return header + content + "\n"
-        except Exception as e:
-            logger.warning("[a2t] LLM markdown formatting failed: %s — using basic format", e)
-
-        # Fallback: basic paragraph splitting
+    @staticmethod
+    def _basic_md_paragraphs(text: str) -> str:
+        """Split raw transcription text into readable markdown paragraphs."""
         import re
         sentences = re.split(r'(?<=[.!?])\s+', text.strip())
         paragraphs = []
-        for i in range(0, len(sentences), 4):
-            paragraphs.append(" ".join(sentences[i:i + 4]))
-        return header + "\n\n".join(paragraphs) + "\n"
+        for i in range(0, len(sentences), 3):
+            paragraphs.append(textwrap.fill(" ".join(sentences[i:i + 3]), width=80))
+        return "\n\n".join(paragraphs)
 
-    def save_transcription(self, fmt: str = "txt") -> dict:
-        """Save the completed transcription to disk in the chosen format."""
-        ft = self._file_transcription
-        if ft["status"] != "done" or "text" not in ft:
-            return {"ok": False, "error": "No transcription to save"}
+    @staticmethod
+    def _chunk_text(text: str, target_size: int = 1500) -> list[str]:
+        """Split text into chunks at sentence boundaries."""
+        import re
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        chunks, current = [], []
+        current_len = 0
+        for s in sentences:
+            if current_len + len(s) > target_size and current:
+                chunks.append(" ".join(current))
+                current, current_len = [], 0
+            current.append(s)
+            current_len += len(s) + 1
+        if current:
+            chunks.append(" ".join(current))
+        return chunks
 
-        ext = fmt if fmt in ("txt", "md") else "txt"
-        transcripts_dir = os.path.join(
-            self.config.project_dir,
-            self.config.cfg.get("transcription", {}).get("save_dir", "Transcriptions"),
-        )
-        os.makedirs(transcripts_dir, exist_ok=True)
-
-        base_name = os.path.splitext(os.path.basename(ft["input_path"]))[0]
-        output_path = os.path.join(transcripts_dir, f"{base_name}.{ext}")
-        with open(output_path, "w", encoding="utf-8") as f:
-            if ext == "md":
-                content = self._format_transcription_md(ft["text"], base_name)
-                f.write(content)
+    def _wrap_md_lines(self, text: str) -> str:
+        """Wrap lines exceeding 80 chars, preserving headings."""
+        wrapped = []
+        for line in text.split("\n"):
+            if len(line) > 80 and not line.startswith("#"):
+                wrapped.append(textwrap.fill(line, width=80))
             else:
-                f.write(ft["text"])
+                wrapped.append(line)
+        return "\n".join(wrapped)
 
-        ft["output_path"] = output_path
-        logger.info("[a2t] Saved → %s", output_path)
-        return {"ok": True, "path": output_path}
+    def _llm_format_chunk(self, chunk: str, prompt: str, allow_short: bool = False) -> str | None:
+        """Send a single chunk to the LLM for formatting. Returns None on failure."""
+        try:
+            content = self.llm.backend.complete(
+                system_prompt=prompt,
+                user_text=chunk,
+                model=self.llm.model,
+                temperature=0.3,
+                max_tokens=max(len(chunk) * 4, 2048),
+                timeout=60,
+            )
+            if content:
+                content = self.llm._strip_reasoning(content)
+            if not content:
+                return None
+            # Sanity check: if output is less than 20% of input, LLM summarized
+            if not allow_short and len(content) < len(chunk) * 0.2:
+                logger.warning(
+                    "[a2t] LLM chunk output too short (%d vs %d input chars) — using basic format for this chunk",
+                    len(content), len(chunk),
+                )
+                return None
+            return content
+        except Exception as e:
+            resp_obj = getattr(e, "response", None)
+            if resp_obj is not None and resp_obj.status_code == 400:
+                logger.warning("[a2t] LLM 400 — re-querying model list for next call")
+                self.llm._resolved_model = None
+            logger.warning("[a2t] LLM chunk formatting failed: %s", e)
+            return None
+
+    def _load_prompt(self, name: str) -> str:
+        """Load a prompt file from prompts/ directory."""
+        path = os.path.join(self.config.project_dir, "prompts", f"{name}.txt")
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+
+    @staticmethod
+    def _strip_md_for_txt(text: str) -> str:
+        """Strip markdown heading markers for plain text output."""
+        import re
+        lines = []
+        for line in text.split("\n"):
+            line = re.sub(r'^#{1,6}\s+', '', line)
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _format_transcription(self, text: str, title: str, style: str, ext: str) -> str:
+        """Format transcription text with the given style for the given file extension."""
+        is_md = ext == "md"
+        header = f"# {title}\n\n---\n\n" if is_md else ""
+
+        # Raw: no LLM
+        if style == "raw":
+            if is_md:
+                body = self._basic_md_paragraphs(text)
+            else:
+                paragraphs = text.split("\n\n")
+                body = "\n\n".join(textwrap.fill(p, width=80) for p in paragraphs)
+            return header + body + "\n"
+
+        # Styles that need LLM
+        if not self.llm or not self.llm.is_available():
+            logger.info("[a2t] LLM not available, falling back to raw formatting")
+            return self._format_transcription(text, title, "raw", ext)
+
+        if not self.llm._resolved_model:
+            self.llm._resolve_model()
+
+        prompt = self._load_prompt(f"transcribe_{style}")
+        allow_short = style == "summarize"
+
+        # Single-shot for short text or summarize (needs full context)
+        if len(text) <= 2000 or style == "summarize":
+            result = self._llm_format_chunk(text, prompt, allow_short=allow_short)
+            if result:
+                logger.info("[a2t] LLM formatted %s (%d → %d chars)", style, len(text), len(result))
+                body = self._wrap_md_lines(result)
+                if not is_md:
+                    body = self._strip_md_for_txt(body)
+                return header + body + "\n"
+            return self._format_transcription(text, title, "raw", ext)
+
+        # Long text: chunk-based
+        chunks = self._chunk_text(text)
+        logger.info("[a2t] Formatting %d chars in %d chunks (style=%s)", len(text), len(chunks), style)
+        formatted_parts = []
+        for i, chunk in enumerate(chunks):
+            result = self._llm_format_chunk(chunk, prompt, allow_short=allow_short)
+            if result:
+                logger.info("[a2t] Chunk %d/%d: %d → %d chars", i + 1, len(chunks), len(chunk), len(result))
+                formatted_parts.append(self._wrap_md_lines(result))
+            else:
+                logger.info("[a2t] Chunk %d/%d: using basic format fallback", i + 1, len(chunks))
+                formatted_parts.append(self._basic_md_paragraphs(chunk))
+
+        body = "\n\n".join(formatted_parts)
+        if not is_md:
+            body = self._strip_md_for_txt(body)
+        logger.info("[a2t] LLM formatted %s total: %d → %d chars", style, len(text), len(body))
+        return header + body + "\n"
+
+    def save_transcription(self, fmt: str = "txt", style: str = "raw", filename: str = "") -> dict:
+        """Validate and launch async save. Returns immediately."""
+        ft = self._file_transcription
+        if ft["status"] not in ("done", "saving") or "text" not in ft:
+            return {"ok": False, "error": "No transcription to save"}
+        if ft["status"] == "saving":
+            return {"ok": False, "error": "Already saving"}
+
+        if style not in ("raw", "clean", "detailed", "summarize"):
+            return {"ok": False, "error": f"Invalid style: {style}"}
+
+        ft["status"] = "saving"
+        ft["output_path"] = ""
+        threading.Thread(
+            target=self._save_worker, args=(fmt, style, filename),
+            daemon=True, name="save-worker",
+        ).start()
+        return {"ok": True}
+
+    def reset_save(self) -> dict:
+        """Clear output_path so the UI returns to the style dropdown for re-saving."""
+        ft = self._file_transcription
+        if ft["status"] == "done" and ft.get("output_path"):
+            ft["output_path"] = ""
+            return {"ok": True}
+        return {"ok": False, "error": "Nothing to reset"}
+
+    def _save_worker(self, fmt: str, style: str, filename: str = ""):
+        """Background worker that formats and saves the transcription."""
+        ft = self._file_transcription
+        try:
+            ext = fmt if fmt in ("txt", "md") else "txt"
+            transcripts_dir = os.path.join(
+                self.config.project_dir,
+                self.config.cfg.get("transcription", {}).get("save_dir", "Transcriptions"),
+            )
+            os.makedirs(transcripts_dir, exist_ok=True)
+
+            base_name = filename.strip() if filename.strip() else os.path.splitext(os.path.basename(ft["input_path"]))[0]
+            output_path = os.path.join(transcripts_dir, f"{base_name}.{ext}")
+
+            content = self._format_transcription(ft["text"], base_name, style, ext)
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            ft["output_path"] = output_path
+            ft["status"] = "done"
+            logger.info("[a2t] Saved → %s (%d chars, style=%s)", output_path, len(content), style)
+        except Exception as e:
+            logger.error("[a2t] Save failed: %s", e)
+            ft["status"] = "error"
+            ft["error"] = str(e)
 
     # --- Lifecycle ---
 

@@ -20,6 +20,11 @@ private:
     bool m_showInstructions = false;
     bool m_requestQuit = false;
 
+    // LLM Backend UI state
+    char m_backendUrlBuf[256] = {};
+    bool m_editingBackendUrl = false;
+    std::string m_lastSeenBackend;
+
     // Spectrum visualizer state (matches Python N_BINS=128)
     static constexpr int kSpectrumBins = 128;
     float m_smoothBins[kSpectrumBins] = {};
@@ -64,6 +69,8 @@ private:
     std::string m_lastTranscriptStatus;  // "Done! ..." or error
     double m_transcriptFlashTime = 0.0;
     bool m_showTranscriptionPopup = false;
+    int m_saveStyleIdx = 2;  // 0=Raw, 1=Clean, 2=Detailed, 3=Summarize
+    char m_saveFilename[256] = "";
     std::vector<std::string> m_transcriptLogLines;
     double m_lastLogFetchTime = 0.0;
 };

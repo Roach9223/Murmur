@@ -52,6 +52,14 @@ class EngineState:
             "model_whisper": app.config.get("whisper_model"),
             "cleanup_enabled": app.llm_enabled,
             "cleanup_model": app.config.get("llm_model") if app.llm_enabled else None,
+            "cleanup_backend": app.config.cfg.get("llm_backend", {}).get("type", "lmstudio"),
+            "cleanup_backend_url": app.config.cfg.get("llm_backend", {}).get(
+                app.config.cfg.get("llm_backend", {}).get("type", "lmstudio"), {}
+            ).get("url", ""),
+            "cleanup_backend_urls": {
+                "lmstudio": app.config.cfg.get("llm_backend", {}).get("lmstudio", {}).get("url", ""),
+                "llamacpp": app.config.cfg.get("llm_backend", {}).get("llamacpp", {}).get("url", ""),
+            },
             "current_mode": app.current_mode,
             "current_profile": app.current_profile,
             "last_raw_transcript": self.last_raw_transcript,

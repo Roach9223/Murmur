@@ -6,7 +6,7 @@
   "silence_timeout": 1.5,
   "max_speech_seconds": 15,
   "llm_cleanup": true,
-  "llm_model": "lmstudio-community/Qwen2.5-7B-Instruct-GGUF",
+  "llm_model": "qwen3-4b-instruct-2507-ud-gguf",
   "llm_mode": "clean",
   "command_prefix": "command",
   "voice_commands": {
@@ -41,6 +41,12 @@
       "llm_system_prompt_file": "prompts/dev_system.txt",
       "llm_temperature": 0.2,
       "llm_max_tokens": 1000
+    },
+    "detailed": {
+      "llm_cleanup": true,
+      "llm_system_prompt_file": "prompts/detailed_system.txt",
+      "llm_temperature": 0.2,
+      "llm_max_tokens": 1000
     }
   },
   "profiles": {
@@ -68,6 +74,19 @@
     "Meeting": {
       "llm_mode": "clean"
     }
+  },
+  "llm_backend": {
+    "type": "lmstudio",
+    "lmstudio": {
+      "url": "http://localhost:1234/v1/chat/completions",
+      "cache_prompt": true
+    },
+    "llamacpp": {
+      "url": "http://localhost:8080",
+      "cache_prompt": true,
+      "chat_template": "chatml"
+    },
+    "timeout": 10
   },
   "dsp": {
     "noise_gate": {

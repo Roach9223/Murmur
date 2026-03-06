@@ -54,7 +54,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "/no_think"
 )
 
-VALID_LLM_MODES = ("raw", "clean", "prompt", "dev")
+VALID_LLM_MODES = ("raw", "clean", "prompt", "dev", "detailed")
 
 DEFAULT_LLM_MODES = {
     "raw": {"llm_cleanup": False},
@@ -73,6 +73,12 @@ DEFAULT_LLM_MODES = {
     "dev": {
         "llm_cleanup": True,
         "llm_system_prompt_file": "prompts/dev_system.txt",
+        "llm_temperature": 0.2,
+        "llm_max_tokens": 1000,
+    },
+    "detailed": {
+        "llm_cleanup": True,
+        "llm_system_prompt_file": "prompts/detailed_system.txt",
         "llm_temperature": 0.2,
         "llm_max_tokens": 1000,
     },
@@ -99,6 +105,20 @@ DEFAULT_VAD = {
 DEFAULT_RECORDING = {
     "default_source": "post",
     "save_dir": "Recordings",
+}
+
+DEFAULT_LLM_BACKEND = {
+    "type": "lmstudio",
+    "lmstudio": {
+        "url": "http://localhost:1234/v1/chat/completions",
+        "cache_prompt": True,
+    },
+    "llamacpp": {
+        "url": "http://localhost:8080",
+        "cache_prompt": True,
+        "chat_template": "chatml",
+    },
+    "timeout": 10,
 }
 
 DEFAULT_DSP = {
@@ -162,6 +182,21 @@ class ConfigManager:
         # Recording defaults
         if "recording" not in self.cfg:
             self.cfg["recording"] = dict(DEFAULT_RECORDING)
+        # LLM backend: inject defaults if missing
+        if "llm_backend" not in self.cfg:
+            self.cfg["llm_backend"] = json.loads(json.dumps(DEFAULT_LLM_BACKEND))
+        else:
+            for key in ("lmstudio", "llamacpp"):
+                if key not in self.cfg["llm_backend"]:
+                    self.cfg["llm_backend"][key] = dict(DEFAULT_LLM_BACKEND[key])
+                else:
+                    for k, v in DEFAULT_LLM_BACKEND[key].items():
+                        if k not in self.cfg["llm_backend"][key]:
+                            self.cfg["llm_backend"][key][k] = v
+            if "type" not in self.cfg["llm_backend"]:
+                self.cfg["llm_backend"]["type"] = DEFAULT_LLM_BACKEND["type"]
+            if "timeout" not in self.cfg["llm_backend"]:
+                self.cfg["llm_backend"]["timeout"] = DEFAULT_LLM_BACKEND["timeout"]
         # DSP: inject full default or backfill missing sub-keys
         if "dsp" not in self.cfg:
             self.cfg["dsp"] = json.loads(json.dumps(DEFAULT_DSP))

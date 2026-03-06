@@ -19,10 +19,10 @@ echo.
 
 :: Step 1: Build Python engine with PyInstaller (skip with --ui-only)
 if %UI_ONLY%==1 (
-    echo [1/3] Skipping Python engine (--ui-only)
+    echo [1/3] Skipping Python engine --ui-only
     echo.
 ) else (
-    echo [1/3] Building Python engine (PyInstaller)...
+    echo [1/3] Building Python engine with PyInstaller...
     cd /d "%PROJECT_DIR%"
     call venv\Scripts\activate
     pyinstaller murmur-engine.spec --distpath "%DIST_DIR%" --workpath "%BUILD_DIR%" --noconfirm
@@ -38,7 +38,7 @@ if %UI_ONLY%==1 (
 echo [2/3] Building C++ UI (CMake Release)...
 if not defined VCPKG_ROOT (
     echo ERROR: VCPKG_ROOT environment variable is not set.
-    echo Set it to your vcpkg installation directory (e.g., set VCPKG_ROOT=C:\vcpkg)
+    echo Set it to your vcpkg installation directory, e.g. set VCPKG_ROOT=C:\vcpkg
     exit /b 1
 )
 cd /d "%PROJECT_DIR%dictation-ui"

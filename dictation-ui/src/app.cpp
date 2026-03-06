@@ -117,6 +117,51 @@ void DictationApp::Render()
                 ImGui::EndMenu();
             }
 
+            ImGui::Separator();
+
+            // LLM Backend submenu
+            if (ImGui::BeginMenu("LLM Backend")) {
+                // Backend type radio selection
+                bool isLmStudio = (status.cleanup_backend == "lmstudio" || status.cleanup_backend.empty());
+                bool isLlamaCpp = (status.cleanup_backend == "llamacpp");
+
+                if (ImGui::MenuItem("LM Studio", nullptr, isLmStudio)) {
+                    if (!isLmStudio) {
+                        m_engine.SetLLMBackend("lmstudio");
+                        strncpy(m_backendUrlBuf, status.cleanup_backend_urls.lmstudio.c_str(), sizeof(m_backendUrlBuf) - 1);
+                        m_backendUrlBuf[sizeof(m_backendUrlBuf) - 1] = '\0';
+                    }
+                }
+                if (ImGui::MenuItem("llama.cpp", nullptr, isLlamaCpp)) {
+                    if (!isLlamaCpp) {
+                        m_engine.SetLLMBackend("llamacpp");
+                        strncpy(m_backendUrlBuf, status.cleanup_backend_urls.llamacpp.c_str(), sizeof(m_backendUrlBuf) - 1);
+                        m_backendUrlBuf[sizeof(m_backendUrlBuf) - 1] = '\0';
+                    }
+                }
+
+                ImGui::Separator();
+
+                // Sync URL buffer when backend changes externally or on first frame
+                if (status.cleanup_backend != m_lastSeenBackend || !m_editingBackendUrl) {
+                    strncpy(m_backendUrlBuf, status.cleanup_backend_url.c_str(), sizeof(m_backendUrlBuf) - 1);
+                    m_backendUrlBuf[sizeof(m_backendUrlBuf) - 1] = '\0';
+                    m_lastSeenBackend = status.cleanup_backend;
+                }
+
+                // Endpoint URL input
+                ImGui::Text("Endpoint:");
+                ImGui::SetNextItemWidth(350);
+                if (ImGui::InputText("##BackendURL", m_backendUrlBuf, sizeof(m_backendUrlBuf),
+                                     ImGuiInputTextFlags_EnterReturnsTrue)) {
+                    m_engine.SetLLMBackendURL(m_backendUrlBuf);
+                    m_editingBackendUrl = false;
+                }
+                m_editingBackendUrl = ImGui::IsItemActive();
+
+                ImGui::EndMenu();
+            }
+
             ImGui::EndMenu();
         }
 
@@ -441,6 +486,15 @@ void DictationApp::Render()
         if (lastSlash != std::string::npos)
             filename = filename.substr(lastSlash + 1);
 
+        // Pre-populate save filename when transcription first completes
+        if ((ft.status == "done" || ft.status == "saving") && m_saveFilename[0] == '\0' && !filename.empty()) {
+            std::string baseName = filename;
+            auto dotPos = baseName.find_last_of('.');
+            if (dotPos != std::string::npos)
+                baseName = baseName.substr(0, dotPos);
+            snprintf(m_saveFilename, sizeof(m_saveFilename), "%s", baseName.c_str());
+        }
+
         if (ft.active) {
             // In-progress
             ImGui::Text("File:");
@@ -457,7 +511,7 @@ void DictationApp::Render()
                 float t = (float)fmod(ImGui::GetTime() * 0.5, 1.0);
                 ImGui::ProgressBar(t, ImVec2(-1, 0));
             }
-        } else if (ft.status == "done") {
+        } else if (ft.status == "done" || ft.status == "saving") {
             ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Transcription Complete");
             ImGui::Spacing();
             ImGui::Text("File:");
@@ -466,28 +520,41 @@ void DictationApp::Render()
             ImGui::Spacing();
 
             if (ft.output_path.empty()) {
-                // Not saved yet — show format choice buttons
-                ImGui::Text("Save as:");
+                // Not saved yet — show filename + style dropdown + format buttons
+                static const char* styleLabels[] = {"Raw", "Clean", "Detailed", "Summarize"};
+                static const char* styleKeys[]   = {"raw", "clean", "detailed", "summarize"};
+
+                ImGui::Text("Name:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputText("##filename", m_saveFilename, sizeof(m_saveFilename));
+
+                ImGui::Text("Style:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(120);
+                ImGui::Combo("##style", &m_saveStyleIdx, styleLabels, IM_ARRAYSIZE(styleLabels));
+
                 ImGui::Spacing();
 
-                if (ImGui::Button("Save as .txt", ImVec2(140, 0))) {
-                    std::string saved_path;
-                    m_engine.SaveTranscription("txt", saved_path);
-                    if (!saved_path.empty())
-                        m_lastTranscriptStatus = saved_path;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Save as .md", ImVec2(140, 0))) {
-                    std::string saved_path;
-                    m_engine.SaveTranscription("md", saved_path);
-                    if (!saved_path.empty())
-                        m_lastTranscriptStatus = saved_path;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Close##done_unsaved", ImVec2(80, 0))) {
-                    m_showTranscriptionPopup = false;
-                    m_transcriptLogLines.clear();
-                    ImGui::CloseCurrentPopup();
+                if (ft.status == "saving") {
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Saving...");
+                    float t = (float)fmod(ImGui::GetTime() * 0.5, 1.0);
+                    ImGui::ProgressBar(t, ImVec2(-1, 0));
+                } else {
+                    if (ImGui::Button("Save .txt", ImVec2(120, 0))) {
+                        m_engine.SaveTranscription("txt", styleKeys[m_saveStyleIdx], m_saveFilename);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Save .md", ImVec2(120, 0))) {
+                        m_engine.SaveTranscription("md", styleKeys[m_saveStyleIdx], m_saveFilename);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Close##done_unsaved", ImVec2(80, 0))) {
+                        m_showTranscriptionPopup = false;
+                        m_transcriptLogLines.clear();
+                        m_saveFilename[0] = '\0';
+                        ImGui::CloseCurrentPopup();
+                    }
                 }
             } else {
                 // Already saved — show path + Open Folder
@@ -503,6 +570,11 @@ void DictationApp::Render()
                 if (ImGui::Button("Open Folder", ImVec2(120, 0))) {
                     std::string cmd = "/select,\"" + ft.output_path + "\"";
                     ShellExecuteA(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWNORMAL);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Save Another", ImVec2(120, 0))) {
+                    m_engine.ResetSave();
+                    m_saveFilename[0] = '\0';
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Close##done_saved", ImVec2(80, 0))) {
@@ -536,6 +608,11 @@ void DictationApp::Render()
         // --- Engine Log panel ---
         ImGui::Spacing();
         ImGui::SeparatorText("Engine Log");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear##logs")) {
+            m_engine.ClearLogs();
+            m_transcriptLogLines.clear();
+        }
         float logHeight = ImGui::GetContentRegionAvail().y - 4.0f;
         if (logHeight < 40.0f) logHeight = 40.0f;
         ImGui::BeginChild("##TranscriptLog", ImVec2(-1, logHeight), ImGuiChildFlags_Border,

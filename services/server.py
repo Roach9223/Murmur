@@ -1,5 +1,6 @@
 import io
 import logging
+import logging.handlers
 import os
 import sys
 import threading
@@ -37,6 +38,12 @@ class SetHotkeyRequest(BaseModel):
 class SetMicRequest(BaseModel):
     device_index: int
 
+class SetBackendRequest(BaseModel):
+    type: str  # "lmstudio" or "llamacpp"
+
+class SetBackendURLRequest(BaseModel):
+    url: str
+
 class CalibrateRequest(BaseModel):
     action: str  # "start" or "finish"
 
@@ -52,6 +59,8 @@ class TranscribeFileRequest(BaseModel):
 
 class SaveTranscriptionRequest(BaseModel):
     format: str = "txt"  # "txt" or "md"
+    style: str = "raw"   # "raw", "clean", "detailed", "summarize"
+    filename: str = ""   # optional custom filename (without extension)
 
 
 # --- Route factory ---
@@ -189,6 +198,58 @@ def create_app(engine) -> FastAPI:
         except Exception as e:
             raise HTTPException(400, str(e))
 
+    # --- LLM Backend ---
+
+    @app.post("/control/set_llm_backend")
+    def control_set_llm_backend(req: SetBackendRequest):
+        if req.type not in ("lmstudio", "llamacpp"):
+            raise HTTPException(400, f"Unknown backend type '{req.type}'. Valid: lmstudio, llamacpp")
+        from services.llm import LMStudioBackend, LlamaCppBackend
+        backend_cfg = engine.config.cfg.get("llm_backend", {})
+        if req.type == "llamacpp":
+            cpp_cfg = backend_cfg.get("llamacpp", {})
+            new_backend = LlamaCppBackend(
+                base_url=cpp_cfg.get("url", "http://localhost:8080"),
+                cache_prompt=cpp_cfg.get("cache_prompt", True),
+                chat_template=cpp_cfg.get("chat_template", "chatml"),
+            )
+        else:
+            lms_cfg = backend_cfg.get("lmstudio", {})
+            new_backend = LMStudioBackend(
+                url=lms_cfg.get("url", "http://localhost:1234/v1/chat/completions"),
+                cache_prompt=lms_cfg.get("cache_prompt", True),
+            )
+        engine.llm.set_backend(new_backend)
+        engine.config.cfg.setdefault("llm_backend", {})["type"] = req.type
+        logger.info("[API] LLM backend switched to %s", req.type)
+        return {"ok": True, "backend": req.type}
+
+    @app.post("/control/set_llm_backend_url")
+    def control_set_llm_backend_url(req: SetBackendURLRequest):
+        if not req.url:
+            raise HTTPException(400, "URL cannot be empty")
+        backend_cfg = engine.config.cfg.get("llm_backend", {})
+        current_type = backend_cfg.get("type", "lmstudio")
+        from services.llm import LMStudioBackend, LlamaCppBackend
+        if current_type == "llamacpp":
+            cpp_cfg = backend_cfg.get("llamacpp", {})
+            new_backend = LlamaCppBackend(
+                base_url=req.url,
+                cache_prompt=cpp_cfg.get("cache_prompt", True),
+                chat_template=cpp_cfg.get("chat_template", "chatml"),
+            )
+            engine.config.cfg.setdefault("llm_backend", {}).setdefault("llamacpp", {})["url"] = req.url
+        else:
+            lms_cfg = backend_cfg.get("lmstudio", {})
+            new_backend = LMStudioBackend(
+                url=req.url,
+                cache_prompt=lms_cfg.get("cache_prompt", True),
+            )
+            engine.config.cfg.setdefault("llm_backend", {}).setdefault("lmstudio", {})["url"] = req.url
+        engine.llm.set_backend(new_backend)
+        logger.info("[API] LLM backend URL changed to %s", req.url)
+        return {"ok": True, "url": req.url}
+
     # --- DSP ---
 
     @app.post("/dsp/calibrate")
@@ -236,21 +297,18 @@ def create_app(engine) -> FastAPI:
         llm = getattr(engine, "llm", None)
         if llm and llm.is_available():
             try:
-                import requests as req
-                resp = req.post(llm.url, json={
-                    "model": llm.model,
-                    "messages": [
-                        {"role": "system", "content": "Generate a single natural English sentence (15-25 words) for a user to read aloud during microphone calibration. The sentence should use a variety of sounds and be easy to read. Output ONLY the sentence, nothing else."},
-                        {"role": "user", "content": "Generate a calibration sentence."},
-                    ],
-                    "temperature": 1.0,
-                    "max_tokens": 60,
-                }, timeout=5)
-                resp.raise_for_status()
-                content = resp.json()["choices"][0]["message"]["content"].strip()
-                content = content.strip('"\'')
-                if 10 < len(content) < 200:
-                    return {"ok": True, "prompt": content, "source": "llm"}
+                content = llm.backend.complete(
+                    system_prompt="Generate a single natural English sentence (15-25 words) for a user to read aloud during microphone calibration. The sentence should use a variety of sounds and be easy to read. Output ONLY the sentence, nothing else.",
+                    user_text="Generate a calibration sentence.",
+                    model=llm.model,
+                    temperature=1.0,
+                    max_tokens=60,
+                    timeout=5,
+                )
+                if content:
+                    content = content.strip('"\'')
+                    if 10 < len(content) < 200:
+                        return {"ok": True, "prompt": content, "source": "llm"}
             except Exception:
                 pass
         return {"ok": True, "prompt": random.choice(fallbacks), "source": "fallback"}
@@ -299,10 +357,19 @@ def create_app(engine) -> FastAPI:
     def transcribe_save(req: SaveTranscriptionRequest):
         if req.format not in ("txt", "md"):
             raise HTTPException(400, "format must be 'txt' or 'md'")
-        result = engine.save_transcription(req.format)
+        if req.style not in ("raw", "clean", "detailed", "summarize"):
+            raise HTTPException(400, "style must be 'raw', 'clean', 'detailed', or 'summarize'")
+        result = engine.save_transcription(req.format, req.style, req.filename)
         if not result["ok"]:
             raise HTTPException(400, result["error"])
-        return {"ok": True, "path": result["path"]}
+        return {"ok": True}
+
+    @app.post("/transcribe/reset-save")
+    def transcribe_reset_save():
+        result = engine.reset_save()
+        if not result["ok"]:
+            raise HTTPException(400, result["error"])
+        return {"ok": True}
 
     # --- Config ---
 
@@ -327,6 +394,30 @@ def create_app(engine) -> FastAPI:
             engine.set_approval_mode(body["approval_mode"])
         if "push_to_talk" in body:
             engine.set_push_to_talk(body["push_to_talk"])
+
+        # LLM backend config updates
+        if "llm_backend" in body:
+            llm_backend = body["llm_backend"]
+            if "type" in llm_backend:
+                from services.llm import LMStudioBackend, LlamaCppBackend
+                merged = engine.config.cfg.get("llm_backend", {})
+                new_type = llm_backend["type"]
+                if new_type == "llamacpp":
+                    cpp_cfg = merged.get("llamacpp", {})
+                    new_backend = LlamaCppBackend(
+                        base_url=cpp_cfg.get("url", "http://localhost:8080"),
+                        cache_prompt=cpp_cfg.get("cache_prompt", True),
+                        chat_template=cpp_cfg.get("chat_template", "chatml"),
+                    )
+                elif new_type == "lmstudio":
+                    lms_cfg = merged.get("lmstudio", {})
+                    new_backend = LMStudioBackend(
+                        url=lms_cfg.get("url", "http://localhost:1234/v1/chat/completions"),
+                        cache_prompt=lms_cfg.get("cache_prompt", True),
+                    )
+                else:
+                    raise HTTPException(400, f"Unknown backend type '{new_type}'")
+                engine.llm.set_backend(new_backend)
 
         # DSP config updates
         if "dsp" in body:
@@ -388,6 +479,31 @@ def create_app(engine) -> FastAPI:
             all_lines = f.readlines()
 
         return {"lines": [line.rstrip("\n") for line in all_lines[-n:]]}
+
+    @app.post("/logs/clear")
+    def logs_clear():
+        """Truncate the active log file and remove rotated backups."""
+        log_path = os.path.join(engine.config.project_dir, "logs", "dictation.log")
+        # Close and re-open all RotatingFileHandler instances so the file handle is released
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.handlers.RotatingFileHandler):
+                handler.close()
+        # Truncate the main log
+        if os.path.exists(log_path):
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.truncate(0)
+        # Remove rotated backups
+        for suffix in (".1", ".2", ".3"):
+            backup = log_path + suffix
+            if os.path.exists(backup):
+                os.remove(backup)
+        # Re-open handlers so logging resumes to the fresh file
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.handlers.RotatingFileHandler):
+                handler.baseFilename = log_path
+                handler.stream = handler._open()
+        logger.info("Logs cleared via API")
+        return {"ok": True}
 
     @app.post("/engine/shutdown")
     def engine_shutdown():

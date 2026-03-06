@@ -4,19 +4,9 @@
 
 # Murmur
 
-So... I broke my wrist.
+A fully local voice engine for Windows. Press a key, talk, it types. No cloud, no API keys, no subscription — just your GPU.
 
-Typing sucked.
-
-So I built this.
-
-What started as a "quick little Python script" to dictate into whatever window I had open somehow turned into a hybrid C++ / Python voice engine with Whisper, a local LLM, a DSP chain, a real-time spectrum analyzer, profiles, auto-detect, an HTTP API... you know... normal casual overengineering.
-
-Anyway.
-
-Now it's open source.
-
-If you want to talk instead of type, this is for you.
+Real-time dictation into any window, audio file transcription, local LLM cleanup, DSP processing, and a C++ desktop UI. Everything runs on your machine.
 
 ---
 
@@ -26,21 +16,18 @@ If you want to talk instead of type, this is for you.
 - [What Is This?](#what-is-this)
 - [**Quick Start (Install)**](#quick-start)
 - [How It Works](#how-it-works-quick-version)
-- [Why I Made This](#why-i-made-this)
 - [What It Actually Does](#what-it-actually-does)
   - [Voice to Text](#-voice--text-whisper-large-v3)
   - [Audio-to-Text File Transcription](#-audio-to-text-file-transcription)
   - [WAV Recording](#-wav-recording)
   - [Cleanup Modes](#-cleanup-modes-optional)
-  - [Real-Time DSP](#-real-time-dsp-because-noise-is-annoying)
+  - [Real-Time DSP](#-real-time-dsp)
   - [Desktop UI](#-c-desktop-ui)
   - [Profiles + Auto-Detect](#-profiles--auto-detect)
   - [Voice Commands](#-voice-commands)
   - [Approval Mode](#-approval-mode)
   - [Push-to-Talk](#-push-to-talk)
-- [What This Is NOT](#what-this-is-not)
-- [Who This Is For](#who-this-is-for)
-- [The Stack](#the-stack-because-youll-ask)
+- [The Stack](#the-stack)
 - [Configuration](#configuration)
 - [Building from Source](#building-from-source)
 - [HTTP API](#http-api)
@@ -58,27 +45,17 @@ Murmur is a local voice engine that does two things:
 1. **Real-time dictation** — press a key, talk, it types directly into whatever window you have focused.
 2. **Audio file transcription** — drop in a WAV, MP3, FLAC, or M4A. Get clean text back. Save as plain text or formatted markdown.
 
-No cloud. No API keys. No sending your voice to some mystery server. No subscription.
-
-Services like REV charge $1.50/min for human transcription. Otter.ai and others charge monthly fees for AI transcription. Murmur does it locally, for free, with your own GPU and your own LLM. You own the entire pipeline.
-
 It runs:
 
 - **Whisper large-v3** on your GPU (via [faster-whisper](https://github.com/SYSTRAN/faster-whisper))
 - **Silero VAD** for neural speech detection
-- **Optional local LLM cleanup** (via [LM Studio](https://lmstudio.ai))
+- **Optional local LLM cleanup** via [LM Studio](https://lmstudio.ai) or native [llama.cpp](https://github.com/ggerganov/llama.cpp) — recommended model: [Qwen3-4B Instruct](https://huggingface.co/unsloth/Qwen3-4B-Instruct-GGUF)
 - **A real-time DSP chain** (noise gate + compressor)
 - **A C++ desktop UI** (Dear ImGui + DirectX 11)
 
-For live dictation, it types the result straight into your active window using `SendInput`. Direct keystroke injection, no clipboard nonsense.
+For live dictation, it types the result straight into your active window using `SendInput`. Direct keystroke injection, no clipboard.
 
 For file transcription, it runs Whisper over your audio file with progress tracking, optionally cleans it up through your local LLM, and saves the result to disk.
-
-You press a key. You talk. It types.
-
-Or you hand it a file. It transcribes. You save.
-
-That's it.
 
 ---
 
@@ -88,11 +65,11 @@ That's it.
 > **Requirements:**
 > - Windows 10 or 11
 > - NVIDIA GPU with CUDA support (4GB+ VRAM)
-> - For cleanup modes (Clean/Prompt/Dev): [LM Studio](https://lmstudio.ai) running at `localhost:1234` with a model loaded. Raw mode works without it.
+> - For cleanup modes (Clean/Prompt/Dev): [LM Studio](https://lmstudio.ai) running at `localhost:1234` with a model loaded, or [llama.cpp](https://github.com/ggerganov/llama.cpp) server. Recommended model: **Qwen3-4B Instruct** (`qwen3-4b-instruct-2507-ud-gguf`). Raw mode works without any LLM.
 > - Optional: [ffmpeg](https://ffmpeg.org/) on PATH (only needed for MP3 export from WAV recordings)
 
 > [!NOTE]
-> **Windows only.** Murmur uses Windows-native APIs throughout — SendInput for text injection, DirectX 11 for the UI, WASAPI for audio capture, and Win32 for hotkey suppression and window detection. These aren't abstractions we can swap out; they're deliberate choices for reliability on this platform.
+> **Windows only.** Murmur uses Windows-native APIs throughout — SendInput for text injection, DirectX 11 for the UI, WASAPI for audio capture, and Win32 for hotkey suppression and window detection.
 
 ### Option 1: Pre-Built (Recommended)
 
@@ -105,8 +82,6 @@ That's it.
 4. Press **F1** (or click the banner). Talk. Pause. It types.
 
 The UI launches the Python engine automatically in the background. The first run downloads the Whisper model (~3GB) and the Silero VAD model, which may take a few minutes.
-
-No account. No API key. No subscription. Everything runs on your machine.
 
 ### Option 2: From Source
 
@@ -170,37 +145,6 @@ You can also switch manually via the UI or tray menu. Customize profiles and aut
 
 ---
 
-## Why I Made This
-
-I couldn't type comfortably.
-I needed speech-to-text.
-But normal dictation software either:
-
-- sends everything to the cloud,
-- or gives you raw messy transcription,
-- or feels like it was designed in 2004.
-
-So I built something for myself.
-
-Originally it was just:
-
-```python
-while listening:
-    transcribe()
-    type_text()
-```
-
-Then I added cleanup.
-Then modes.
-Then profiles.
-Then a UI.
-Then DSP.
-Then I accidentally built an engine.
-
-Classic.
-
----
-
 ## What It Actually Does
 
 <p align="center">
@@ -209,53 +153,34 @@ Classic.
   <em>The Murmur desktop UI. DSP controls, spectrum analyzer, latency breakdown, engine status.</em>
 </p>
 
-### 🎙 Voice → Text (Whisper large-v3)
+### Voice → Text (Whisper large-v3)
 
-Runs locally on your GPU using [faster-whisper](https://github.com/SYSTRAN/faster-whisper). CUDA, float16, anti-repetition params. The whole stack.
+Runs locally on your GPU using [faster-whisper](https://github.com/SYSTRAN/faster-whisper). CUDA, float16, anti-repetition params.
 
-Speech detection uses **Silero VAD** (a neural network that knows the difference between you talking and your keyboard clacking). It's a major upgrade over simple volume thresholds — fewer false triggers, cleaner segmentation, and it handles background noise gracefully. Falls back to energy-threshold detection if VAD isn't available.
+Speech detection uses **Silero VAD** (neural network). Major upgrade over simple volume thresholds — fewer false triggers, cleaner segmentation. Falls back to energy-threshold detection if VAD isn't available.
 
-You speak normally.
-It segments on silence (configurable threshold + timeout).
-It transcribes fast (under 500ms per chunk on an RTX 4090).
+You speak normally. It segments on silence (configurable threshold + timeout). Transcribes under 500ms per chunk on an RTX 4090.
 
-No internet required.
+### Audio-to-Text File Transcription
 
-### 📄 Audio-to-Text File Transcription
+Got a meeting recording? A voice memo? Drop the file in, get clean text back.
 
-This is the REV killer.
+- Supports **WAV, MP3, FLAC, M4A**
+- **Progress tracking** in real time
+- **Optional LLM cleanup** — same local model that cleans your dictation
+- **Save as plain text or formatted markdown**
+- Output in `Transcriptions/` with timestamped filenames
 
-Got a meeting recording? A voice memo? An interview? Drop the file in, get clean text back.
+### WAV Recording
 
-- Supports **WAV, MP3, FLAC, M4A** — anything faster-whisper can read
-- **Progress tracking** — watch it work through your file in real time
-- **Optional LLM cleanup** — same local model that cleans your dictation cleans your transcriptions
-- **Save as plain text or formatted markdown** — your choice
-- Output lands in `Transcriptions/` with a timestamped filename
+Capture mic audio for debugging, archival, or later transcription.
 
-REV charges $1.50/min for human transcription. Otter.ai charges $16.99/month. You already have a GPU. This costs you nothing.
-
-The whole thing runs through the UI or the HTTP API (`POST /transcribe/file`, `POST /transcribe/save`).
-
-### 🎬 WAV Recording
-
-Sometimes you want to capture what your mic is hearing — for debugging, for keeping a record, or for transcribing later.
-
-- Record mic audio to WAV files at any time
-- Choose **pre-DSP** (raw mic) or **post-DSP** (after noise gate + compressor) as the source
-- Non-blocking — recording doesn't slow down dictation
+- Record at any time, **pre-DSP** (raw mic) or **post-DSP** (after processing)
+- Non-blocking — doesn't slow down dictation
 - Files saved to `Recordings/` with timestamped filenames
 - **MP3 export** via ffmpeg (if installed)
 
-Start and stop via the UI or API (`POST /record/start`, `POST /record/stop`).
-
-### 🧠 Cleanup Modes (Optional)
-
-Because raw dictation sounds like this:
-
-> "uh yeah so basically I was thinking that maybe we could refactor like the auth thing"
-
-And that's not how you want your messages or prompts to look.
+### Cleanup Modes (Optional)
 
 Four modes, each with its own system prompt, temperature, and token limit:
 
@@ -266,77 +191,31 @@ Four modes, each with its own system prompt, temperature, and token limit:
 | **Prompt** | ON | Turns speech into structured, LLM-ready prompts. |
 | **Dev** | ON | Turns rambling into numbered tasks and checklists. |
 
-Cleanup runs through a local LLM via [LM Studio](https://lmstudio.ai) at `localhost:1234`. If LM Studio is down, it falls back to raw text silently. No crash, no hang.
+Cleanup runs through a local LLM — either **LM Studio** (OpenAI-compatible API) or **native llama.cpp** server. Switch backends from the UI (Edit > LLM Backend) or `config.json`. If the LLM is down, falls back to raw text silently.
 
-Switch modes whenever you want. UI, tray menu, or API.
+### Real-Time DSP
 
-### 🎚 Real-Time DSP (Because Noise Is Annoying)
+**Noise gate** with hysteresis, attack/release/hold, two-phase auto-calibration (silence + speech measurement), smooth attenuation to configurable floor. Vectorized, zero-alloc.
 
-There's a noise gate.
-There's an optional compressor.
-There's a spectrum analyzer.
+**Compressor** — feed-forward, RMS-based, gentle defaults. Disabled by default.
 
-Did this need to exist?
+**Spectrum analyzer** — 64-bin log-spaced FFT (50Hz–12kHz), EMA smoothing, peak hold, phase-based coloring. Toggle pre/post-DSP.
 
-Probably not.
+### C++ Desktop UI
 
-Did I build it anyway?
+Dear ImGui + DirectX 11 desktop app. Python engine runs separately, they talk over HTTP on localhost.
 
-Yes.
-
-**The noise gate:**
-- Uses hysteresis (separate open/close thresholds so it doesn't chatter)
-- Has attack / release / hold time constants
-- **Two-phase auto-calibration**: stay silent for 2s (measures room noise), then speak for 3s (measures your voice level). It computes optimal thresholds automatically. The UI gives you a sentence to read during calibration — generated by your local LLM or picked from a fallback list.
-- Doesn't hard-mute. It attenuates smoothly to a configurable floor (preserves room tone)
-- Vectorized gain ramp, no Python loops in the audio path
-
-**The compressor:**
-- Feed-forward, RMS-based envelope
-- Gentle defaults that don't smash your voice into oblivion
-- Configurable ratio, threshold, makeup gain
-- Disabled by default
-
-**The spectrum analyzer:**
-- 64-bin log-spaced FFT (50Hz–12kHz)
-- EMA smoothing, peak hold, noise floor tracking
-- Phase-based coloring that changes with engine state
-- Toggle pre/post-DSP to see what the gate is doing
-
-Because why not.
-
-### 🖥 C++ Desktop UI
-
-I didn't want a clunky Python GUI.
-So I built a Dear ImGui + DirectX 11 desktop app.
-
-The Python engine runs separately.
-They talk over HTTP on localhost.
-
-Why?
-
-Because Python is great for ML.
-C++ is great for UI.
-And I didn't want to fight tkinter.
-
-The UI gives you:
 - Clickable recording banner (or use the hotkey)
 - DSP sliders with live spectrum
-- Mode/profile switching
+- Mode/profile/LLM backend switching
 - Mic selection + hotkey configuration
 - Approval mode (review text before it's typed)
-- Latency breakdown: Record, Transcribe, Cleanup, Type, plus Generation (processing-only) and Total
+- Latency breakdown
 - Push-to-talk toggle
 
-### 🎯 Profiles + Auto-Detect
+### Profiles + Auto-Detect
 
-Switch profiles automatically based on the active window.
-
-Open VS Code? It switches to Dev mode.
-Open Terminal? Raw mode.
-Open LM Studio? Prompt mode.
-
-It just adapts. Five profiles out of the box:
+Auto-switch profiles based on the active window.
 
 | Profile | Mode | Notes |
 |---------|------|-------|
@@ -348,7 +227,7 @@ It just adapts. Five profiles out of the box:
 
 Auto-detect polls the foreground window title every 500ms with regex rules. Customize in `config.json`.
 
-### 🗣 Voice Commands
+### Voice Commands
 
 Say "command" followed by a phrase:
 
@@ -359,50 +238,24 @@ Say "command" followed by a phrase:
 | "command clear" | Select All + Delete |
 | "command stop dictation" | Stops recording |
 
-Without the prefix, phrases are typed as regular text. Saying "new line" by itself just types "new line." The prefix is configurable in `config.json`. Set `command_prefix` to `""` to disable it.
+Without the prefix, phrases are typed as regular text. The prefix is configurable in `config.json`.
 
-### ✅ Approval Mode
+### Approval Mode
 
-When enabled, text is held for review instead of being typed immediately. You can:
-- **Approve** to type it as-is
-- **Edit** to modify in a text box, then send
-- **Reject** to discard and keep listening
+When enabled, text is held for review instead of being typed immediately. Approve, edit, or reject.
 
-### 🎤 Push-to-Talk
+### Push-to-Talk
 
-Hold the hotkey to record, release to stop. Alternative to the default toggle mode. Useful in noisy environments or for short commands.
+Hold the hotkey to record, release to stop. Alternative to toggle mode.
 
 ---
 
-## What This Is NOT
-
-- Not a SaaS.
-- Not monetized.
-- Not harvesting your voice.
-- Not polished corporate software.
-- Not guaranteed to never break.
-
-It's a tool I built for myself that turned into something useful.
-
----
-
-## Who This Is For
-
-- People with injuries who don't want to type.
-- Developers who talk faster than they type.
-- People who'd rather not pay $1.50/min for transcription.
-- People who like local-first software.
-- People who like overbuilt personal tools.
-- People who don't trust cloud dictation.
-
----
-
-## The Stack (Because You'll Ask)
+## The Stack
 
 - **Python 3.11+**: engine, audio pipeline, Whisper, LLM client
 - **faster-whisper**: Whisper large-v3 on CUDA, float16
 - **Silero VAD**: neural speech detection (via torch.hub)
-- **LM Studio**: local LLM for cleanup (optional)
+- **LLM backend abstraction**: LM Studio (OpenAI-compatible) or native llama.cpp
 - **FastAPI + uvicorn**: HTTP API between engine and UI
 - **sounddevice / PortAudio**: WASAPI audio capture at 48kHz
 - **numpy / scipy**: DSP processing, resampling (48kHz to 16kHz)
@@ -411,17 +264,11 @@ It's a tool I built for myself that turned into something useful.
 - **keyboard**: SendInput-based keystroke injection (KEYEVENTF_UNICODE)
 - **pystray**: system tray icon (when running from source)
 
-Yes, it's a hybrid.
-Yes, it's slightly ridiculous.
-Yes, it works.
-
 ---
 
 ## Configuration
 
-Everything is in `config.json`. If it's missing, defaults are used. Old configs without newer sections (DSP, auto-detect, profiles) are backfilled automatically.
-
-See the [config.json](config.json) in this repo for the full example with all options.
+Everything is in `config.json`. If it's missing, defaults are used. Old configs without newer sections are backfilled automatically.
 
 Key settings:
 
@@ -433,24 +280,29 @@ Key settings:
   "energy_threshold": 0.01,
   "silence_timeout": 1.5,
   "llm_mode": "clean",
+  "llm_backend": {
+    "type": "lmstudio",
+    "lmstudio": { "url": "http://localhost:1234/v1/chat/completions" },
+    "llamacpp": { "url": "http://localhost:8080" }
+  },
   "command_prefix": "command",
-  "voice_commands": { ... },
-  "llm_modes": { ... },
-  "profiles": { ... },
-  "auto_detect": { ... },
-  "dsp": { ... },
+  "voice_commands": { "..." : "..." },
+  "llm_modes": { "..." : "..." },
+  "profiles": { "..." : "..." },
+  "auto_detect": { "..." : "..." },
+  "dsp": { "..." : "..." },
   "vad": { "enabled": false, "threshold": 0.5, "min_silence_ms": 300 },
   "recording": { "default_source": "post", "save_dir": "Recordings" }
 }
 ```
 
-DSP slider changes save automatically. Other config changes take effect on engine restart.
+DSP slider changes save automatically. LLM backend is switchable at runtime from the UI.
 
 ---
 
 ## Building from Source
 
-`build.bat` builds everything and assembles the `Murmur/` distribution folder. A fresh clone has no `Murmur/` folder — the build creates it.
+`build.bat` builds everything and assembles the `Murmur/` distribution folder.
 
 ### Prerequisites
 
@@ -459,44 +311,22 @@ DSP slider changes save automatically. Other config changes take effect on engin
 - **Visual Studio 2022+** (C++ Desktop Development workload)
 - **CMake 3.21+**
 - **vcpkg** with the `VCPKG_ROOT` environment variable set
-- **PyInstaller** (`pip install pyinstaller`) — for bundling the Python engine
+- **PyInstaller** (`pip install pyinstaller`)
 
 ### Full Build
 
 ```bash
-# Set up Python environment first
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 pip install pyinstaller
 
-# Run full build
-build.bat
-
-# Or rebuild just the C++ UI (skips PyInstaller):
-build.bat --ui-only
+build.bat                  # Full build
+build.bat --ui-only        # Rebuild C++ UI only (skips PyInstaller)
 ```
 
 > [!NOTE]
 > `build.bat` uses `%TEMP%` for intermediate build files and reads `%VCPKG_ROOT%` for the vcpkg toolchain.
-> The final output goes to `Murmur/` in the repo root.
-
-### Building Components Individually
-
-**Python engine only** (PyInstaller):
-
-```bash
-venv\Scripts\activate
-pyinstaller murmur-engine.spec --noconfirm
-```
-
-**C++ UI only** (CMake + vcpkg):
-
-```bash
-cd dictation-ui
-cmake --preset release
-cmake --build build/release --config Release
-```
 
 ---
 
@@ -526,9 +356,9 @@ The engine exposes a REST API on `127.0.0.1:8899` (when run with `--server`). 30
 | Method | Path | Purpose |
 |--------|------|---------|
 | POST | `/dsp/calibrate` | `{"action": "start"}` / `{"action": "finish_silence"}` / `{"action": "start_speech"}` / `{"action": "finish"}` |
-| GET | `/calibrate/prompt` | Get a sentence for the user to read during speech calibration |
+| GET | `/calibrate/prompt` | Get a sentence for speech calibration |
 
-**Plus:** approval workflow, feature toggles (push-to-talk, hotkey, mic), config read/write, log tailing, shutdown.
+**Plus:** approval workflow, feature toggles (push-to-talk, hotkey, mic), LLM backend switching, config read/write, log tailing, shutdown.
 
 See [CLAUDE.md](CLAUDE.md) for the complete endpoint reference.
 
@@ -542,90 +372,13 @@ Python Engine (audio, DSP, Whisper, LLM, text injection)
 C++ UI (ImGui + DX11, controls, spectrum, status)
 ```
 
-13 independent Python services in `services/`. Each handles one thing. They don't import each other. The orchestrator (`app.py`) wires them together. Audio, DSP, transcriber, commands, output, LLM, config, tray, window detect, engine state, server, WAV recording, and VAD.
+13 independent Python services in `services/`. Each handles one thing. The orchestrator (`app.py`) wires them together.
+
+Dual LLM backend support: LM Studio (OpenAI-compatible `/v1/chat/completions`) or native llama.cpp (`/completion`). Switchable at runtime via UI, tray, or API.
 
 8-phase state machine: IDLE → LISTENING → RECORDING → TRANSCRIBING → CLEANING → TYPING (or PENDING_APPROVAL) → back to LISTENING. Any failure → ERROR (logged, loop continues).
 
 See [CLAUDE.md](CLAUDE.md) for the deep technical docs.
-
----
-
-## Why It's Open Source
-
-Because:
-
-- I built it for me.
-- It might help someone else.
-- Local-first tools should exist.
-- If I ever stop maintaining it, someone else can keep it alive.
-
-If you improve it, awesome.
-If you fork it, awesome.
-If you rip parts out for your own project, awesome.
-
----
-
-## A Quick Note on Overengineering
-
-This project was supposed to take about an hour.
-
-The plan was simple:
-
-> "I'll just write a quick Python script so I can talk instead of type while my wrist heals."
-
-Something like:
-
-```python
-listen()
-transcribe()
-type()
-```
-
-Done. Easy.
-
-Except then I thought:
-
-- "It should probably clean up filler words."
-- "Actually a noise gate would help."
-- "Okay but now I want a spectrum analyzer."
-- "Maybe profiles would be nice."
-- "What if it auto-detected the active window?"
-- "You know what… it needs a real UI."
-
-Fast forward several hours and somehow we now have:
-
-- Engine phases
-- Latency metrics
-- A DSP chain
-- An HTTP API
-- Profiles
-- Auto-detection
-- A C++ desktop UI
-- A system tray service
-- A real-time spectrum analyzer
-- Audio file transcription
-- WAV recording with MP3 export
-- Neural voice activity detection
-- Two-phase audio calibration
-- And a lot of configuration knobs
-
-All because I said the most dangerous sentence in software engineering:
-
-> "I'll just add one more thing."
-
----
-
-## If You're Reading This
-
-Hi.
-
-Thanks for checking it out.
-
-If it helps you, that's the win.
-
-If it inspires you to build your own weird hyper-personal tool, even better.
-
-— Josh
 
 ---
 

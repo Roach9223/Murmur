@@ -130,6 +130,14 @@ bool EngineClient::PollStatus() {
                 m_status.latency.type_ms = lat.value("type", 0.0f);
             }
 
+            m_status.cleanup_backend = j.value("cleanup_backend", std::string{"lmstudio"});
+            m_status.cleanup_backend_url = j.value("cleanup_backend_url", std::string{});
+            if (j.contains("cleanup_backend_urls") && j["cleanup_backend_urls"].is_object()) {
+                auto& u = j["cleanup_backend_urls"];
+                m_status.cleanup_backend_urls.lmstudio = u.value("lmstudio", std::string{});
+                m_status.cleanup_backend_urls.llamacpp = u.value("llamacpp", std::string{});
+            }
+
             m_status.spectrum_pre_dsp = j.value("spectrum_pre_dsp", false);
 
             // WAV recording status
@@ -343,6 +351,24 @@ bool EngineClient::SetMicDevice(int device_index) {
     return res && res->status == 200;
 }
 
+bool EngineClient::SetLLMBackend(const std::string& type) {
+    httplib::Client cli(m_host, m_port);
+    cli.set_connection_timeout(2);
+    cli.set_read_timeout(2);
+    json body = {{"type", type}};
+    auto res = cli.Post("/control/set_llm_backend", body.dump(), "application/json");
+    return res && res->status == 200;
+}
+
+bool EngineClient::SetLLMBackendURL(const std::string& url) {
+    httplib::Client cli(m_host, m_port);
+    cli.set_connection_timeout(2);
+    cli.set_read_timeout(2);
+    json body = {{"url", url}};
+    auto res = cli.Post("/control/set_llm_backend_url", body.dump(), "application/json");
+    return res && res->status == 200;
+}
+
 bool EngineClient::PostDSPConfig(const std::string& json_body) {
     httplib::Client cli(m_host, m_port);
     cli.set_connection_timeout(2);
@@ -452,19 +478,31 @@ bool EngineClient::TranscribeFile(const std::string& path, std::string& out_erro
     return true;
 }
 
-bool EngineClient::SaveTranscription(const std::string& format, std::string& out_path) {
+bool EngineClient::SaveTranscription(const std::string& format, const std::string& style, const std::string& filename) {
     httplib::Client cli(m_host, m_port);
     cli.set_connection_timeout(2);
     cli.set_read_timeout(5);
-    json body = {{"format", format}};
+    json body = {{"format", format}, {"style", style}};
+    if (!filename.empty())
+        body["filename"] = filename;
     auto res = cli.Post("/transcribe/save", body.dump(), "application/json");
-    if (res && res->status == 200) {
-        auto j = json::parse(res->body, nullptr, false);
-        if (!j.is_discarded())
-            out_path = j.value("path", std::string{});
-        return true;
-    }
-    return false;
+    return res && res->status == 200;
+}
+
+bool EngineClient::ResetSave() {
+    httplib::Client cli(m_host, m_port);
+    cli.set_connection_timeout(2);
+    cli.set_read_timeout(2);
+    auto res = cli.Post("/transcribe/reset-save");
+    return res && res->status == 200;
+}
+
+bool EngineClient::ClearLogs() {
+    httplib::Client cli(m_host, m_port);
+    cli.set_connection_timeout(2);
+    cli.set_read_timeout(2);
+    auto res = cli.Post("/logs/clear");
+    return res && res->status == 200;
 }
 
 std::vector<std::string> EngineClient::FetchLogTail(int n) {

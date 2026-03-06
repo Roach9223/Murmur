@@ -92,6 +92,10 @@ struct EngineStatus {
     std::string recordings_dir;
     std::string last_recording_path;
 
+    std::string cleanup_backend;      // "lmstudio" or "llamacpp"
+    std::string cleanup_backend_url;  // active backend's URL
+    struct { std::string lmstudio; std::string llamacpp; } cleanup_backend_urls;
+
     struct FileTranscription {
         bool active = false;
         std::string status = "idle";
@@ -132,6 +136,9 @@ public:
     bool SetHotkey(const std::string& key);
     bool SetMicDevice(int device_index);
 
+    bool SetLLMBackend(const std::string& type);
+    bool SetLLMBackendURL(const std::string& url);
+
     bool PostDSPConfig(const std::string& json_body);
     bool StartCalibration();
     bool FinishSilenceCalibration();
@@ -145,8 +152,10 @@ public:
     bool ExportMP3(const std::string& wav_path);
 
     bool TranscribeFile(const std::string& path, std::string& out_error);
-    bool SaveTranscription(const std::string& format, std::string& out_path);
+    bool SaveTranscription(const std::string& format, const std::string& style, const std::string& filename = "");
+    bool ResetSave();
     std::vector<std::string> FetchLogTail(int n = 30);
+    bool ClearLogs();
 
 private:
     void PollLoop();
