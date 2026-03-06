@@ -15,7 +15,7 @@ See `docs/plans/gameplan.md` (local only, not tracked in git) for the full produ
 - Toggle dictation with F1 (suppressed from other apps) or click the UI banner
 - Silence-based chunking (energy threshold + pause detection)
 - Voice commands with prefix system ("command new line", "command send", etc.)
-- **4 LLM modes**: Raw (no LLM), Clean (filler removal), Prompt (optimize for AI input), Dev (structured tasks)
+- **5 LLM modes**: Raw (no LLM), Clean (filler removal), Prompt (optimize for AI input), Dev (structured tasks), Detailed (expanded paragraphs)
 - **Profile system**: Default, Terminal, LM Studio, VS Code, Meeting — each with its own mode + commands
 - **Auto-detect active window**: polls foreground window title, auto-switches profiles via regex rules
 - **DSP audio pipeline**: Noise gate (expander-style with hysteresis) + compressor, auto-calibration, all adjustable at runtime
@@ -96,6 +96,7 @@ ai-text-to-type/
 | Clean | ON | Remove filler words, fix grammar, preserve meaning |
 | Prompt | ON | Restructure speech into clear LLM-ready prompts |
 | Dev | ON | Convert speech into bullet points / task lists |
+| Detailed | ON | Expand speech into detailed, well-structured paragraphs |
 
 Each mode has its own system prompt in `prompts/`, temperature, and max_tokens. Mode is switchable at runtime via UI, tray menu, or API.
 

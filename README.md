@@ -65,7 +65,7 @@ For file transcription, it runs Whisper over your audio file with progress track
 > **Requirements:**
 > - Windows 10 or 11
 > - NVIDIA GPU with CUDA support (4GB+ VRAM)
-> - For cleanup modes (Clean/Prompt/Dev): [LM Studio](https://lmstudio.ai) running at `localhost:1234` with a model loaded, or [llama.cpp](https://github.com/ggerganov/llama.cpp) server. Recommended model: **Qwen3-4B Instruct** (`qwen3-4b-instruct-2507-ud-gguf`). Raw mode works without any LLM.
+> - For cleanup modes (Clean/Prompt/Dev/Detailed): [LM Studio](https://lmstudio.ai) running at `localhost:1234` with a model loaded, or [llama.cpp](https://github.com/ggerganov/llama.cpp) server. Recommended model: **Qwen3-4B Instruct** (`qwen3-4b-instruct-2507-ud-gguf`). Raw mode works without any LLM.
 > - Optional: [ffmpeg](https://ffmpeg.org/) on PATH (only needed for MP3 export from WAV recordings)
 
 > [!NOTE]
@@ -125,7 +125,7 @@ python app.py --no-cleanup
 
 Press F1. Talk. It types.
 
-Four modes control how your speech gets processed:
+Five modes control how your speech gets processed:
 
 | Mode | What You Get |
 |------|-------------|
@@ -133,6 +133,7 @@ Four modes control how your speech gets processed:
 | **Clean** | Filler words removed, punctuation added. Your exact words preserved. The default. |
 | **Prompt** | Your rambling restructured into clear LLM prompts |
 | **Dev** | Speech converted into numbered tasks and checklists |
+| **Detailed** | Speech expanded into clear, well-structured paragraphs |
 
 Profiles auto-switch modes based on your active window:
 
@@ -182,7 +183,7 @@ Capture mic audio for debugging, archival, or later transcription.
 
 ### Cleanup Modes (Optional)
 
-Four modes, each with its own system prompt, temperature, and token limit:
+Five modes, each with its own system prompt, temperature, and token limit:
 
 | Mode | LLM | What it does |
 |------|-----|-------------|
@@ -190,6 +191,7 @@ Four modes, each with its own system prompt, temperature, and token limit:
 | **Clean** | ON | Removes filler words, adds punctuation. Keeps your exact words. Default. |
 | **Prompt** | ON | Turns speech into structured, LLM-ready prompts. |
 | **Dev** | ON | Turns rambling into numbered tasks and checklists. |
+| **Detailed** | ON | Expands speech into detailed, well-structured paragraphs. |
 
 Cleanup runs through a local LLM — either **LM Studio** (OpenAI-compatible API) or **native llama.cpp** server. Switch backends from the UI (Edit > LLM Backend) or `config.json`. If the LLM is down, falls back to raw text silently.
 
@@ -233,8 +235,10 @@ Say "command" followed by a phrase:
 
 | You say | What happens |
 |---------|-------------|
-| "command new line" | Presses Enter |
-| "command send" | Presses Enter (Ctrl+Enter in LM Studio profile) |
+| "command new line" | Shift+Enter (new line without sending) |
+| "command send" | Enter (Ctrl+Enter in LM Studio profile) |
+| "command copy" | Ctrl+C |
+| "command paste" | Ctrl+V |
 | "command clear" | Select All + Delete |
 | "command stop dictation" | Stops recording |
 

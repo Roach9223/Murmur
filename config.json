@@ -10,8 +10,8 @@
   "llm_mode": "clean",
   "command_prefix": "command",
   "voice_commands": {
-    "new line": "enter",
-    "newline": "enter",
+    "new line": "shift_enter",
+    "newline": "shift_enter",
     "send": "enter",
     "clear": "select_all_delete",
     "copy": "copy",
