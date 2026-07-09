@@ -17,7 +17,7 @@ Real-time dictation into any window, audio file transcription, local LLM cleanup
 - [**Quick Start (Install)**](#quick-start)
 - [How It Works](#how-it-works-quick-version)
 - [What It Actually Does](#what-it-actually-does)
-  - [Voice to Text](#-voice--text-whisper-large-v3)
+  - [Voice to Text](#-voice--text-whisper)
   - [Audio-to-Text File Transcription](#-audio-to-text-file-transcription)
   - [WAV Recording](#-wav-recording)
   - [Cleanup Modes](#-cleanup-modes-optional)
@@ -47,8 +47,7 @@ Murmur is a local voice engine that does two things:
 
 It runs:
 
-- **Whisper large-v3** on your GPU (via [faster-whisper](https://github.com/SYSTRAN/faster-whisper))
-- **Silero VAD** for neural speech detection
+- **Whisper** on your GPU (via [faster-whisper](https://github.com/SYSTRAN/faster-whisper)) — ships with `distil-large-v3.5`, switchable to `large-v3` and others
 - **Optional local LLM cleanup** via [LM Studio](https://lmstudio.ai) or native [llama.cpp](https://github.com/ggerganov/llama.cpp) — recommended model: [Qwen3-4B Instruct](https://huggingface.co/unsloth/Qwen3-4B-Instruct-GGUF)
 - **A real-time DSP chain** (noise gate + compressor)
 - **A C++ desktop UI** (Dear ImGui + DirectX 11)
@@ -64,7 +63,7 @@ For file transcription, it runs Whisper over your audio file with progress track
 > [!IMPORTANT]
 > **Requirements:**
 > - Windows 10 or 11
-> - NVIDIA GPU with CUDA support (4GB+ VRAM)
+> - NVIDIA GPU with CUDA support (4GB+ VRAM) recommended — without one, transcription falls back to CPU (works, but noticeably slower)
 > - For cleanup modes (Clean/Prompt/Dev/Detailed): [LM Studio](https://lmstudio.ai) running at `localhost:1234` with a model loaded, or [llama.cpp](https://github.com/ggerganov/llama.cpp) server. Recommended model: **Qwen3-4B Instruct** (`qwen3-4b-instruct-2507-ud-gguf`). Raw mode works without any LLM.
 > - Optional: [ffmpeg](https://ffmpeg.org/) on PATH (only needed for MP3 export from WAV recordings)
 
@@ -99,11 +98,16 @@ These settings are tuned for dictation workloads — short inputs, fast response
 > **No Python, no dependencies, no build steps.** Just download and run.
 
 1. Download the latest release from [**Releases**](https://github.com/Roach9223/Murmur/releases)
-2. Extract the zip
+2. Extract the zip **to a user-writable location** (e.g. `C:\Users\you\Murmur` or another drive — *not* `Program Files`; Murmur stores its models, config, and logs next to the exe)
 3. Run **`Murmur.exe`**
 4. Press **F1** (or click the banner). Talk. Pause. It types.
 
-The UI launches the Python engine automatically in the background. The first run downloads the Whisper model (~3GB) and the Silero VAD model, which may take a few minutes.
+The UI launches the Python engine automatically in the background. The first run downloads the Whisper model (~1.5GB) into the `models/` folder, which may take a few minutes — the banner shows "loading" until it's ready.
+
+> [!NOTE]
+> **Windows SmartScreen**: the release is not code-signed, so the first launch shows "Windows protected your PC." Click **More info → Run anyway**. Some antivirus tools may also flag the keyboard hook Murmur uses to type for you — that's the app's core feature, not malware; add an exclusion if needed.
+>
+> **No NVIDIA GPU?** Murmur automatically falls back to CPU transcription (slower, but functional).
 
 ### Option 2: From Source
 
@@ -151,8 +155,8 @@ Five modes control how your speech gets processed:
 
 | Mode | What You Get |
 |------|-------------|
-| **Raw** | Exactly what Whisper hears, no cleanup |
-| **Clean** | Filler words removed, punctuation added. Your exact words preserved. The default. |
+| **Raw** | Exactly what Whisper hears, no cleanup. The default — works out of the box, no LLM needed. |
+| **Clean** | Filler words removed, punctuation added. Your exact words preserved. Requires a local LLM. |
 | **Prompt** | Your rambling restructured into clear LLM prompts |
 | **Dev** | Speech converted into numbered tasks and checklists |
 | **Detailed** | Speech expanded into clear, well-structured paragraphs |
@@ -162,7 +166,7 @@ Profiles auto-switch modes based on your active window:
 - Open **VS Code** → Dev mode
 - Open **Terminal** → Raw mode (commands need exact text)
 - Open **LM Studio** → Prompt mode
-- Everything else → Clean mode
+- Everything else → Raw mode (switch the Default profile to Clean if you run a local LLM)
 
 You can also switch manually via the UI or tray menu. Customize profiles and auto-detect rules in `config.json`.
 
@@ -176,20 +180,20 @@ You can also switch manually via the UI or tray menu. Customize profiles and aut
   <em>The Murmur desktop UI. DSP controls, spectrum analyzer, latency breakdown, engine status.</em>
 </p>
 
-### Voice → Text (Whisper large-v3)
+### Voice → Text (Whisper)
 
-Runs locally on your GPU using [faster-whisper](https://github.com/SYSTRAN/faster-whisper). CUDA, float16, anti-repetition params.
+Runs locally on your GPU using [faster-whisper](https://github.com/SYSTRAN/faster-whisper). CUDA, float16, anti-repetition params. No NVIDIA GPU? It falls back to CPU (int8) automatically.
 
-Speech detection uses **Silero VAD** (neural network). Major upgrade over simple volume thresholds — fewer false triggers, cleaner segmentation. Falls back to energy-threshold detection if VAD isn't available.
+You speak normally. It segments on silence (configurable energy threshold + timeout). Transcribes under 500ms per chunk on an RTX 4090.
 
-You speak normally. It segments on silence (configurable threshold + timeout). Transcribes under 500ms per chunk on an RTX 4090.
+Optional **Silero VAD** (neural speech detection) is available when running from source with torch installed — enable it via `config.json`. The pre-built release uses energy-threshold detection to keep the download small.
 
 <details>
 <summary><strong>Whisper Model Comparison</strong></summary>
 
 <br>
 
-Murmur defaults to `large-v3` for best accuracy. You can switch models by changing `whisper_model` in `config.json`.
+Murmur ships with `Purfview/faster-distil-whisper-large-v3.5` — near-large-v3 accuracy at a fraction of the latency and VRAM. You can switch models by changing `whisper_model` in `config.json` (e.g. to `large-v3` for maximum accuracy):
 
 | | large-v3 | large-v3-turbo |
 |---|---|---|
@@ -228,8 +232,8 @@ Five modes, each with its own system prompt, temperature, and token limit:
 
 | Mode | LLM | What it does |
 |------|-----|-------------|
-| **Raw** | OFF | Exactly what Whisper hears. No processing. |
-| **Clean** | ON | Removes filler words, adds punctuation. Keeps your exact words. Default. |
+| **Raw** | OFF | Exactly what Whisper hears. No processing. Default. |
+| **Clean** | ON | Removes filler words, adds punctuation. Keeps your exact words. |
 | **Prompt** | ON | Turns speech into structured, LLM-ready prompts. |
 | **Dev** | ON | Turns rambling into numbered tasks and checklists. |
 | **Detailed** | ON | Expands speech into detailed, well-structured paragraphs. |
@@ -249,12 +253,11 @@ Cleanup runs through a local LLM — either **LM Studio** (OpenAI-compatible API
 Dear ImGui + DirectX 11 desktop app. Python engine runs separately, they talk over HTTP on localhost.
 
 - Clickable recording banner (or use the hotkey)
-- DSP sliders with live spectrum
-- Mode/profile/LLM backend switching
-- Mic selection + hotkey configuration
-- Approval mode (review text before it's typed)
-- Latency breakdown
-- Push-to-talk toggle
+- One-click mode pills (Raw/Clean/Prompt/Dev/Detailed) + profile and mic dropdowns on the main surface
+- "Heard / Typed" output panel front and center, with the approval workflow inline
+- Live spectrum analyzer + VU meter
+- Collapsible sections for noise gate/compressor (with guided auto-calibration), recording & file transcription, and latency diagnostics
+- Approval mode, push-to-talk, hotkey and media-key capture
 
 ### Profiles + Auto-Detect
 
@@ -262,7 +265,7 @@ Auto-switch profiles based on the active window.
 
 | Profile | Mode | Notes |
 |---------|------|-------|
-| **Default** | Clean | General use |
+| **Default** | Raw | General use, no LLM required |
 | **Terminal** | Raw | No LLM, shell commands need exact text |
 | **LM Studio** | Prompt | "Send" triggers Ctrl+Enter |
 | **VS Code** | Dev | Structured task output |
@@ -298,8 +301,8 @@ Hold the hotkey to record, release to stop. Alternative to toggle mode.
 ## The Stack
 
 - **Python 3.11+**: engine, audio pipeline, Whisper, LLM client
-- **faster-whisper**: Whisper large-v3 on CUDA, float16
-- **Silero VAD**: neural speech detection (via torch.hub)
+- **faster-whisper**: Whisper distil-large-v3.5 on CUDA float16 (CPU int8 fallback)
+- **Silero VAD**: optional neural speech detection (source installs with torch)
 - **LLM backend abstraction**: LM Studio (OpenAI-compatible) or native llama.cpp
 - **FastAPI + uvicorn**: HTTP API between engine and UI
 - **sounddevice / PortAudio**: WASAPI audio capture at 48kHz
@@ -319,12 +322,12 @@ Key settings:
 
 ```json
 {
-  "whisper_model": "large-v3",
-  "mic_device_index": 63,
+  "whisper_model": "Purfview/faster-distil-whisper-large-v3.5",
+  "mic_device_index": 0,
   "hotkey": "f1",
   "energy_threshold": 0.01,
   "silence_timeout": 1.5,
-  "llm_mode": "clean",
+  "llm_mode": "raw",
   "llm_backend": {
     "type": "lmstudio",
     "lmstudio": { "url": "http://localhost:1234/v1/chat/completions" },
@@ -368,10 +371,11 @@ pip install pyinstaller
 
 build.bat                  # Full build
 build.bat --ui-only        # Rebuild C++ UI only (skips PyInstaller)
+build.bat --release        # Also package a clean, scrubbed Murmur-release.zip for GitHub
 ```
 
 > [!NOTE]
-> `build.bat` uses `%TEMP%` for intermediate build files and reads `%VCPKG_ROOT%` for the vcpkg toolchain.
+> `build.bat` uses a temp directory for intermediate build files (`F:\tmp` if it exists, else `%TEMP%`) and reads `%VCPKG_ROOT%` for the vcpkg toolchain.
 
 ---
 
@@ -417,7 +421,7 @@ Python Engine (audio, DSP, Whisper, LLM, text injection)
 C++ UI (ImGui + DX11, controls, spectrum, status)
 ```
 
-13 independent Python services in `services/`. Each handles one thing. The orchestrator (`app.py`) wires them together.
+14 independent Python services in `services/`. Each handles one thing. The orchestrator (`app.py`) wires them together.
 
 Dual LLM backend support: LM Studio (OpenAI-compatible `/v1/chat/completions`) or native llama.cpp (`/completion`). Switchable at runtime via UI, tray, or API.
 

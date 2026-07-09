@@ -78,8 +78,9 @@ ai-text-to-type/
   assets/
     logo-murmur.png             # project logo
     favicon.ico                 # app icon
-  build.bat                     # full build script (PyInstaller + CMake + deploy)
-  murmur-engine.spec            # PyInstaller spec for bundling the engine
+  build.bat                     # full build script (PyInstaller + CMake + deploy; --release packages a clean zip)
+  murmur-engine.spec            # PyInstaller spec for bundling the engine (torch excluded; CUDA DLLs cherry-picked)
+  config.release.json           # scrubbed default config shipped in release zips (raw mode, no dev-machine values)
   CLAUDE.md                     # this file
   README.md                     # GitHub landing page
   LICENSE                       # MIT License
@@ -92,7 +93,7 @@ ai-text-to-type/
 
 | Mode | LLM | Behavior |
 |------|-----|----------|
-| Raw | OFF | Whisper text typed as-is, no LLM processing |
+| Raw | OFF | Whisper text typed as-is, no LLM processing. **Default** — works with no LLM server running |
 | Clean | ON | Remove filler words, fix grammar, preserve meaning |
 | Prompt | ON | Restructure speech into clear LLM-ready prompts |
 | Dev | ON | Convert speech into bullet points / task lists |
@@ -295,9 +296,16 @@ Murmur/Murmur.exe
 ```
 
 **Requirements:**
-- LM Studio running at localhost:1234 with a model loaded (for cleanup modes; Raw mode works without it)
+- LM Studio running at localhost:1234 with a model loaded (for cleanup modes; Raw mode — the default — works without it)
 - Python 3.11+ with venv activated (for source; Murmur.exe bundles everything)
-- NVIDIA GPU with CUDA
+- NVIDIA GPU with CUDA recommended; transcriber falls back to CPU int8 if CUDA init fails
+
+**Release packaging (`build.bat --release`):**
+- Stages a clean folder (no logs/Recordings/Transcriptions/models/dev config) and zips it to `Murmur-release.zip`
+- Ships `config.release.json` as `config.json` (Raw mode default, stock DSP values, mic index 0)
+- Bundles VC++ runtime DLLs next to Murmur.exe (no redistributable install needed)
+- torch is NOT bundled (only used for optional Silero VAD → falls back to RMS silence detection in bundled builds); the specific cuBLAS/cuDNN DLLs ctranslate2 needs are cherry-picked from the venv's torch into the bundle root
+- Whisper models download on first run into `<install>\models` (HF_HOME is set before faster_whisper import)
 
 ## Development Conventions
 
