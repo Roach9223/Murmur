@@ -36,6 +36,10 @@ def validate_gate_params(params: dict) -> list[str]:
         v = params["hold_ms"]
         if not (0 <= v <= 1000):
             errors.append(f"hold_ms must be in [0, 1000], got {v}")
+    if "cal_speech_margin_db" in params:
+        v = params["cal_speech_margin_db"]
+        if not (6 <= v <= 40):
+            errors.append(f"cal_speech_margin_db must be in [6, 40], got {v}")
     return errors
 
 
@@ -75,7 +79,8 @@ class NoiseGate:
     def __init__(self, sample_rate: int = 48000, enabled: bool = True,
                  open_threshold_dbfs: float = -45.0, close_threshold_dbfs: float = -50.0,
                  floor_db: float = -25.0, hold_ms: float = 100.0,
-                 attack_ms: float = 5.0, release_ms: float = 150.0):
+                 attack_ms: float = 5.0, release_ms: float = 150.0,
+                 cal_speech_margin_db: float = 20.0):
         self.enabled = enabled
         self.sample_rate = sample_rate
         self.open_threshold_dbfs = open_threshold_dbfs
@@ -84,6 +89,7 @@ class NoiseGate:
         self.hold_ms = hold_ms
         self.attack_ms = attack_ms
         self.release_ms = release_ms
+        self.cal_speech_margin_db = cal_speech_margin_db
 
         # Derived
         self._floor_lin = 10.0 ** (floor_db / 20.0)
@@ -227,7 +233,7 @@ class NoiseGate:
 
         # Reject if speech was detected (any sample > floor + 20dB in linear)
         floor_rms = np.percentile(rms_array, 50)
-        speech_threshold = floor_rms * 10.0  # +20dB
+        speech_threshold = floor_rms * (10.0 ** (self.cal_speech_margin_db / 20.0))
         if np.any(rms_array > speech_threshold) and floor_rms > 1e-8:
             self._cal_rms_values = []
             return None

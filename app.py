@@ -24,6 +24,7 @@ from services.llm import LLMEnhancer, LMStudioBackend, LlamaCppBackend
 from services.tray import TrayService
 from services.window_detect import ActiveWindowDetector
 from services.engine_state import EngineState, EnginePhase, LatencyMetrics
+from services.transcript import TranscriptLogger
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 logger = logging.getLogger(__name__)
@@ -47,6 +48,16 @@ _IMGUI_TO_KEYBOARD = {
     "keypadmultiply": "num *", "keypadsubtract": "num -",
     "keypadadd": "num +", "keypadenter": "num enter",
 }
+
+
+def _known_kwargs(cls, cfg: dict) -> dict:
+    """Filter a config dict down to parameters cls.__init__ actually accepts."""
+    import inspect
+    params = inspect.signature(cls.__init__).parameters
+    known = {k: v for k, v in cfg.items() if k in params}
+    for k in cfg.keys() - known.keys():
+        logger.warning("[dsp] Ignoring unknown %s parameter: %r", cls.__name__, k)
+    return known
 
 
 def _setup_logging(base_dir: str):
@@ -84,10 +95,14 @@ class DictationApp:
         # Services
         self.output = OutputInjector()
 
-        # DSP chain (noise gate + compressor)
+        # DSP chain (noise gate + compressor). config.json is hand-editable,
+        # so drop unknown keys instead of crashing on a typo or a key from a
+        # different app version.
         dsp_cfg = self.config.cfg.get("dsp", {})
-        gate = NoiseGate(sample_rate=RECORD_RATE, **dsp_cfg.get("noise_gate", {}))
-        compressor = Compressor(sample_rate=RECORD_RATE, **dsp_cfg.get("compressor", {}))
+        gate = NoiseGate(sample_rate=RECORD_RATE,
+                         **_known_kwargs(NoiseGate, dsp_cfg.get("noise_gate", {})))
+        compressor = Compressor(sample_rate=RECORD_RATE,
+                                **_known_kwargs(Compressor, dsp_cfg.get("compressor", {})))
         self.dsp_chain = DSPChain(gate, compressor)
 
         mic_index = self._resolve_mic_device()
@@ -140,6 +155,8 @@ class DictationApp:
         self._transcription_thread: threading.Thread | None = None
         self._shutdown_called = False
         self._hotkey_hooks = []
+        self._media_hotkey_hooks = []
+        self.media_hotkey = self.config.cfg.get("media_hotkey", "")
         self.current_mode = self.config.get("llm_mode")
         self.current_profile = next(iter(self.config.get_profile_names()), "Default")
         self.llm_enabled = False
@@ -148,6 +165,12 @@ class DictationApp:
         # Feature toggles
         self.approval_mode = self.config.get("approval_mode")
         self.push_to_talk = self.config.get("push_to_talk")
+
+        # System-audio loopback ("conversation mode")
+        self.system_audio_enabled = bool(self.config.get("system_audio_enabled"))
+        self.conversation_log = bool(self.config.get("conversation_log"))
+        self.audio.set_loopback_gain(self.config.get("loopback_gain"))
+        self.transcript = TranscriptLogger(self.config.project_dir)
 
         # Engine state (for API)
         self.engine_state = EngineState()
@@ -174,6 +197,11 @@ class DictationApp:
             push_to_talk=self.push_to_talk,
             on_approval_mode_toggled=self.set_approval_mode,
             on_push_to_talk_toggled=self.set_push_to_talk,
+            system_audio_enabled=self.system_audio_enabled,
+            on_system_audio_toggled=self.set_system_audio,
+            loopback_devices=AudioCaptureService.enumerate_loopback_devices,
+            current_loopback_index=self.config.get("loopback_device_index"),
+            on_loopback_device_selected=self.set_loopback_device,
         )
 
         # Window auto-detect
@@ -233,7 +261,10 @@ class DictationApp:
         mic_name = self.config.cfg.get("mic_device_name", "")
 
         try:
-            actual_name = sd.query_devices(mic_index)['name']
+            dev = sd.query_devices(mic_index)
+            if dev['max_input_channels'] <= 0:
+                raise ValueError(f"device {mic_index} has no input channels")
+            actual_name = dev['name']
             if mic_name and mic_name != actual_name:
                 resolved = self._resolve_mic_by_name(mic_name)
                 if resolved is not None:
@@ -248,7 +279,15 @@ class DictationApp:
                                 mic_index, mic_name, resolved)
                     return resolved
             fallback = sd.default.device[0]
-            logger.warning("Saved mic device %d not found, falling back to default (%d)",
+            if fallback is None or fallback < 0:
+                # No system default input — take the first device that can record
+                for i, d in enumerate(sd.query_devices()):
+                    if d['max_input_channels'] > 0:
+                        fallback = i
+                        break
+                else:
+                    fallback = 0  # nothing available; start_stream() will fail gracefully
+            logger.warning("Saved mic device %d not usable, falling back to device %d",
                            mic_index, fallback)
             return fallback
 
@@ -260,6 +299,25 @@ class DictationApp:
             if dev['max_input_channels'] > 0 and dev['name'] == name:
                 return i
         return None
+
+    def _resolve_loopback_device(self) -> int | None:
+        """Resolve the saved loopback device index, with name fallback (USB replug)."""
+        index = self.config.get("loopback_device_index")
+        name = self.config.cfg.get("loopback_device_name", "")
+        if index is None and not name:
+            return None
+        try:
+            if index is not None and sd.query_devices(index)['name'] == name:
+                return index
+        except Exception:
+            pass
+        if name:
+            resolved = self._resolve_mic_by_name(name)
+            if resolved is not None:
+                if resolved != index:
+                    logger.info("Loopback '%s' resolved to index %d", name, resolved)
+                return resolved
+        return index
 
     # --- Console handler ---
 
@@ -284,28 +342,35 @@ class DictationApp:
     def _load_models_async(self):
         """Load Whisper + VAD models in a background thread so the API server is responsive immediately."""
         try:
-            self.transcriber.load_model()
-        except Exception as e:
-            logger.error("Failed to load Whisper model: %s", e)
-            self.engine_state.last_error = f"Whisper load failed: {e}"
+            try:
+                self.transcriber.load_model()
+            except Exception as e:
+                logger.error("Failed to load Whisper model: %s", e)
+                self.engine_state.last_error = f"Whisper load failed: {e}"
 
-        # VAD (optional)
-        vad_cfg = self.config.cfg.get("vad", {})
-        if vad_cfg.get("enabled", False):
-            from services.vad import VoiceActivityDetector
-            self.vad = VoiceActivityDetector(
-                threshold=vad_cfg.get("threshold", 0.5),
-                min_silence_ms=vad_cfg.get("min_silence_ms", 300),
-                speech_pad_ms=vad_cfg.get("speech_pad_ms", 30),
-                window_size=vad_cfg.get("window_size", 512),
-            )
-            if self.vad.load_model():
-                self.vad_enabled = True
-            else:
-                self.vad = None
-                logger.warning("[vad] Falling back to RMS threshold")
-
-        self._model_loading = False
+            # VAD (optional) — any failure here (bad config value, missing
+            # torch, download error) must not kill the loader thread, or
+            # _model_loading stays True forever and transcription never runs.
+            vad_cfg = self.config.cfg.get("vad", {})
+            if vad_cfg.get("enabled", False):
+                try:
+                    from services.vad import VoiceActivityDetector
+                    self.vad = VoiceActivityDetector(
+                        threshold=vad_cfg.get("threshold", 0.5),
+                        min_silence_ms=vad_cfg.get("min_silence_ms", 300),
+                        speech_pad_ms=vad_cfg.get("speech_pad_ms", 30),
+                        window_size=vad_cfg.get("window_size", 512),
+                    )
+                    if self.vad.load_model():
+                        self.vad_enabled = True
+                    else:
+                        self.vad = None
+                        logger.warning("[vad] Falling back to RMS threshold")
+                except Exception as e:
+                    self.vad = None
+                    logger.warning("[vad] Init failed (%s) — falling back to RMS threshold", e)
+        finally:
+            self._model_loading = False
         logger.info("All models loaded — ready for dictation")
 
     # --- Mode / Profile switching ---
@@ -325,6 +390,7 @@ class DictationApp:
                     system_prompt=system_prompt,
                     temperature=mode_cfg.get("llm_temperature", 0.1),
                     max_tokens=mode_cfg.get("llm_max_tokens", 500),
+                    max_output_ratio=mode_cfg.get("llm_max_output_ratio", 1.5),
                 )
 
         if hasattr(self, "tray"):
@@ -340,25 +406,31 @@ class DictationApp:
             self.current_profile = profile_name
 
         # Switch LLM mode (acquires _state_lock internally)
-        new_mode = profile_cfg.get("llm_mode", "clean")
+        new_mode = profile_cfg.get("llm_mode", "raw")
         self._apply_mode(new_mode)
 
         # Update voice commands
         if "voice_commands" in profile_cfg:
             self.commands.update_commands(profile_cfg["voice_commands"])
 
-        # Update hotkey if profile overrides it
-        new_hotkey = profile_cfg.get("hotkey", self.toggle_key)
-        if new_hotkey != self.toggle_key:
-            self._unregister_hotkey()
-            self.toggle_key = new_hotkey
-            self._register_hotkey()
+        # Hotkey/approval/push-to-talk are applied only when the profile itself
+        # defines them. profile_cfg is merged with the full global config, so
+        # checking it would always "find" these keys and clobber runtime
+        # changes (e.g. approval mode toggled via tray) on every profile
+        # switch — constantly, with auto-detect enabled.
+        raw_profile = self.config.cfg["profiles"].get(profile_name, {})
 
-        # Update feature toggles if profile overrides them
-        if "approval_mode" in profile_cfg:
-            self.set_approval_mode(profile_cfg["approval_mode"])
-        if "push_to_talk" in profile_cfg:
-            self.set_push_to_talk(profile_cfg["push_to_talk"])
+        if "hotkey" in raw_profile:
+            new_hotkey = raw_profile["hotkey"]
+            if new_hotkey != self.toggle_key:
+                self._unregister_hotkey()
+                self.toggle_key = new_hotkey
+                self._register_hotkey()
+
+        if "approval_mode" in raw_profile:
+            self.set_approval_mode(raw_profile["approval_mode"])
+        if "push_to_talk" in raw_profile:
+            self.set_push_to_talk(raw_profile["push_to_talk"])
 
         if hasattr(self, "tray"):
             self.tray.set_profile(profile_name)
@@ -656,6 +728,10 @@ class DictationApp:
 
         self.engine_state.last_cleaned_text = final
 
+        # --- Conversation transcript log (system-audio mode, output = "both") ---
+        if self.transcript.active:
+            self.transcript.append(final)
+
         # --- Type or hold for approval ---
         if self.approval_mode:
             self.engine_state.pending_text = final
@@ -696,9 +772,13 @@ class DictationApp:
 
     def approve_pending(self):
         """Type the pending text and clear it."""
-        text = self.engine_state.pending_text
-        if not text:
-            return
+        # Atomic take: two concurrent approve calls (UI + API) must not
+        # both grab the same text and double-type it.
+        with self._state_lock:
+            text = self.engine_state.pending_text
+            if not text:
+                return
+            self.engine_state.pending_text = ""
         self.engine_state.phase = EnginePhase.TYPING
         t0 = time.perf_counter()
         try:
@@ -710,18 +790,19 @@ class DictationApp:
             return
         type_ms = (time.perf_counter() - t0) * 1000.0
         logger.info("  >> approved and typed")
-        self.engine_state.pending_text = ""
         self.engine_state.latency.type_ms = round(type_ms, 1)
         self.engine_state.phase = EnginePhase.LISTENING if self.recording else EnginePhase.IDLE
 
     def edit_pending(self, new_text: str):
         """Replace pending text with edited version, then type it."""
-        self.engine_state.pending_text = new_text
+        with self._state_lock:
+            self.engine_state.pending_text = new_text
         self.approve_pending()
 
     def reject_pending(self):
         """Discard the pending text."""
-        self.engine_state.pending_text = ""
+        with self._state_lock:
+            self.engine_state.pending_text = ""
         logger.info("  >> rejected")
         self.engine_state.phase = EnginePhase.LISTENING if self.recording else EnginePhase.IDLE
 
@@ -831,6 +912,54 @@ class DictationApp:
             self.tray.set_hotkey_label(new_key)
         logger.info("  [hotkey] Changed to %s", new_key.upper())
 
+    # --- Media hotkey (play/pause) ---
+
+    def _send_media_play_pause(self):
+        """Send the system media play/pause key."""
+        try:
+            keyboard.send('play/pause media')
+            logger.info("  [media] play/pause")
+        except Exception as e:
+            logger.warning("  [media] Failed to send play/pause: %s", e)
+
+    def _register_media_hotkey(self):
+        """Register the media control hotkey (keyboard key or mouse button)."""
+        self._media_hotkey_hooks = []
+        if not self.media_hotkey:
+            return
+        if self.media_hotkey.startswith("mouse_"):
+            btn = self.media_hotkey.replace("mouse_", "")
+            mouse_btn = {"x1": "x", "x2": "x2"}.get(btn, btn)
+            h = mouse.on_button(lambda: self._send_media_play_pause(),
+                                buttons=(mouse_btn,), types=("down",))
+            self._media_hotkey_hooks = [("mouse", h)]
+        else:
+            h = keyboard.add_hotkey(self.media_hotkey,
+                                    self._send_media_play_pause, suppress=True)
+            self._media_hotkey_hooks = [("keyboard", h)]
+        logger.info("  [media_hotkey] Registered: %s", self.media_hotkey.upper())
+
+    def _unregister_media_hotkey(self):
+        """Remove the media hotkey registration."""
+        for item in self._media_hotkey_hooks:
+            try:
+                kind, hook = item
+                if kind == "mouse":
+                    mouse.unhook(hook)
+                else:
+                    keyboard.unhook(hook)
+            except (KeyError, ValueError):
+                pass
+        self._media_hotkey_hooks = []
+
+    def set_media_hotkey(self, new_key: str):
+        """Change the media hotkey at runtime."""
+        self._unregister_media_hotkey()
+        self.media_hotkey = _IMGUI_TO_KEYBOARD.get(new_key, new_key)
+        self._register_media_hotkey()
+        logger.info("  [media_hotkey] Changed to %s",
+                    new_key.upper() if new_key else "DISABLED")
+
     # --- Mic device ---
 
     def set_mic_device(self, new_index: int):
@@ -863,6 +992,79 @@ class DictationApp:
                 f.write("\n")
         except Exception as e:
             logger.warning("Failed to save mic preference: %s", e)
+
+    # --- System-audio loopback ("conversation mode") ---
+
+    def set_system_audio(self, enabled: bool):
+        """Toggle capturing + mixing system loopback audio into the transcript.
+
+        When ON, also starts a conversation transcript-log session (if enabled).
+        """
+        enabled = bool(enabled)
+        with self._state_lock:
+            if enabled:
+                index = self.audio.loopback_device_index
+                if index is None:
+                    index = self._resolve_loopback_device()
+                if index is None:
+                    logger.warning("  [system_audio] no loopback device selected — pick one first")
+                    self.system_audio_enabled = False
+                    if hasattr(self, "tray"):
+                        self.tray.set_system_audio(False)
+                    return
+                ok = self.audio.enable_loopback(index)
+                self.system_audio_enabled = ok
+                if ok and self.conversation_log:
+                    self.transcript.start_session()
+            else:
+                self.audio.disable_loopback()
+                self.system_audio_enabled = False
+                self.transcript.stop_session()
+        self._persist_config_keys({"system_audio_enabled": self.system_audio_enabled})
+        if hasattr(self, "tray"):
+            self.tray.set_system_audio(self.system_audio_enabled)
+        logger.info("  [system_audio] %s", "ON" if self.system_audio_enabled else "OFF")
+
+    def set_loopback_device(self, new_index: int):
+        """Select the loopback source device at runtime."""
+        if new_index is None or new_index == self.audio.loopback_device_index:
+            return
+        if new_index == self.audio.device_index:
+            logger.warning("  [loopback] device %d is the active mic — ignoring", new_index)
+            return
+        if self.system_audio_enabled:
+            ok = self.audio.switch_loopback_device(new_index)
+            if not ok:
+                logger.warning("  [loopback] failed to switch to device %d", new_index)
+                return
+        name = ""
+        try:
+            name = sd.query_devices(new_index)['name']
+        except Exception:
+            pass
+        self._persist_config_keys({
+            "loopback_device_index": new_index,
+            "loopback_device_name": name,
+        })
+        if hasattr(self, "tray"):
+            self.tray.set_loopback_device(new_index)
+        logger.info("  [loopback] Source set to device %d (%s)", new_index, name)
+
+    def _persist_config_keys(self, updates: dict):
+        """Merge a few keys into config.json (preserves the rest)."""
+        config_path = os.path.join(self.config.project_dir, "config.json")
+        try:
+            cfg = {}
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            cfg.update(updates)
+            self.config.cfg.update(updates)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+        except Exception as e:
+            logger.warning("Failed to persist config keys %s: %s", list(updates), e)
 
     # --- DSP config persistence ---
 
@@ -939,6 +1141,7 @@ class DictationApp:
             result = subprocess.run(
                 ["ffmpeg", "-y", "-i", wav_path, "-q:a", "2", mp3_path],
                 capture_output=True, text=True, timeout=60,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if result.returncode == 0:
                 logger.info("[rec] Exported MP3: %s", mp3_path)
@@ -1213,6 +1416,9 @@ class DictationApp:
             return
         self._shutdown_called = True
 
+        self._unregister_media_hotkey()
+        self.audio.disable_loopback()
+        self.transcript.stop_session()
         if self.wav_recorder and self.wav_recorder.is_recording:
             self.stop_wav_recording()
         if self.recording:
@@ -1241,7 +1447,19 @@ class DictationApp:
         logger.info("Silence: threshold=%s  pause=%ss  max=%ss\n", self.energy_threshold, self.silence_timeout, self.max_speech_sec)
 
         self._register_hotkey()
-        self.audio.start_stream()
+        self._register_media_hotkey()
+        try:
+            self.audio.start_stream()
+        except Exception as e:
+            # No working mic must not kill the app — keep tray/API/UI alive so
+            # the user can pick a different input device.
+            logger.error("Failed to open audio input stream: %s", e)
+            self.engine_state.phase = EnginePhase.ERROR
+            self.engine_state.last_error = f"No usable microphone: {e}"
+        # Restore system-audio loopback if it was enabled last session
+        if self.system_audio_enabled:
+            self.system_audio_enabled = False  # set_system_audio toggles it on
+            self.set_system_audio(True)
         self.tray.start()
 
         # Load Whisper + VAD models in background thread

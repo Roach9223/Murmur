@@ -19,7 +19,7 @@ class TrayService:
         hotkey_label: str = "F1",
         mode_names: list[str] | None = None,
         profile_names: list[str] | None = None,
-        current_mode: str = "clean",
+        current_mode: str = "raw",
         current_profile: str = "Default",
         on_mode_changed=None,
         on_profile_changed=None,
@@ -29,6 +29,11 @@ class TrayService:
         push_to_talk: bool = False,
         on_approval_mode_toggled=None,
         on_push_to_talk_toggled=None,
+        system_audio_enabled: bool = False,
+        on_system_audio_toggled=None,
+        loopback_devices=None,
+        current_loopback_index=None,
+        on_loopback_device_selected=None,
     ):
         self._toggle = toggle_callback
         self._is_recording = is_recording_callback
@@ -47,6 +52,11 @@ class TrayService:
         self._push_to_talk = push_to_talk
         self._on_approval_mode_toggled = on_approval_mode_toggled
         self._on_push_to_talk_toggled = on_push_to_talk_toggled
+        self._system_audio_enabled = system_audio_enabled
+        self._on_system_audio_toggled = on_system_audio_toggled
+        self._loopback_devices = loopback_devices  # callable -> list[dict] | None
+        self._current_loopback_index = current_loopback_index
+        self._on_loopback_device_selected = on_loopback_device_selected
 
         self._icon_idle = self._create_icon(self._COLOR_IDLE)
         self._icon_recording = self._create_icon(self._COLOR_RECORDING)
@@ -122,6 +132,18 @@ class TrayService:
         if self._tray_icon:
             self._tray_icon.update_menu()
 
+    def set_system_audio(self, enabled: bool):
+        """Update system-audio (loopback) toggle state."""
+        self._system_audio_enabled = enabled
+        if self._tray_icon:
+            self._tray_icon.update_menu()
+
+    def set_loopback_device(self, index):
+        """Update the selected loopback device."""
+        self._current_loopback_index = index
+        if self._tray_icon:
+            self._tray_icon.update_menu()
+
     # --- Menu callbacks ---
 
     def _on_toggle_clicked(self, icon, item):
@@ -141,6 +163,21 @@ class TrayService:
     def _on_push_to_talk_clicked(self, icon, item):
         if self._on_push_to_talk_toggled:
             self._on_push_to_talk_toggled(not self._push_to_talk)
+
+    def _on_system_audio_clicked(self, icon, item):
+        if self._on_system_audio_toggled:
+            self._on_system_audio_toggled(not self._system_audio_enabled)
+
+    def _make_loopback_callback(self, index):
+        def on_click(icon, item):
+            if self._on_loopback_device_selected:
+                self._on_loopback_device_selected(index)
+        return on_click
+
+    def _make_loopback_check(self, index):
+        def check(item):
+            return self._current_loopback_index == index
+        return check
 
     # --- Menu builder ---
 
@@ -190,8 +227,39 @@ class TrayService:
                 checked=lambda item: self._push_to_talk,
             ),
             Menu.SEPARATOR,
+            MenuItem(
+                "System audio (loopback)",
+                self._on_system_audio_clicked,
+                checked=lambda item: self._system_audio_enabled,
+            ),
+            MenuItem("Loopback device", Menu(*self._build_loopback_items())),
+            Menu.SEPARATOR,
             MenuItem("Quit", self._on_quit_clicked),
         )
+
+    def _build_loopback_items(self) -> list:
+        devices = []
+        if callable(self._loopback_devices):
+            try:
+                devices = self._loopback_devices() or []
+            except Exception:
+                devices = []
+        if not devices:
+            return [MenuItem("(no input devices)", None, enabled=False)]
+        items = []
+        for dev in devices:
+            label = dev["name"]
+            if dev.get("is_loopback"):
+                label = "🔊 " + label
+            if not dev.get("supported", True):
+                label += " (no 48kHz)"
+            items.append(MenuItem(
+                label,
+                self._make_loopback_callback(dev["index"]),
+                checked=self._make_loopback_check(dev["index"]),
+                radio=True,
+            ))
+        return items
 
     def _make_mode_callback(self, mode_name: str):
         def on_click(icon, item):

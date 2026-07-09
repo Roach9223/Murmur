@@ -38,6 +38,9 @@ class SetHotkeyRequest(BaseModel):
 class SetMicRequest(BaseModel):
     device_index: int
 
+class SetMediaHotkeyRequest(BaseModel):
+    hotkey: str  # empty string to disable
+
 class SetBackendRequest(BaseModel):
     type: str  # "lmstudio" or "llamacpp"
 
@@ -82,6 +85,7 @@ def create_app(engine) -> FastAPI:
     def health():
         return {
             "status": "ok",
+            "app": "murmur",  # identity marker — the UI refuses to attach to foreign servers
             "version": VERSION,
             "uptime_s": round(engine.engine_state.uptime_s, 1),
         }
@@ -188,6 +192,18 @@ def create_app(engine) -> FastAPI:
         engine.set_hotkey(req.hotkey)
         return {"ok": True, "hotkey": engine.toggle_key}
 
+    # --- Media Hotkey ---
+
+    @app.post("/control/set_media_hotkey")
+    def control_set_media_hotkey(req: SetMediaHotkeyRequest):
+        engine.set_media_hotkey(req.hotkey)
+        return {"ok": True, "media_hotkey": engine.media_hotkey}
+
+    @app.post("/control/media_play_pause")
+    def control_media_play_pause():
+        engine._send_media_play_pause()
+        return {"ok": True}
+
     # --- Mic ---
 
     @app.post("/control/set_mic")
@@ -195,6 +211,21 @@ def create_app(engine) -> FastAPI:
         try:
             engine.set_mic_device(req.device_index)
             return {"ok": True, "mic_device_index": req.device_index}
+        except Exception as e:
+            raise HTTPException(400, str(e))
+
+    # --- System audio (loopback) ---
+
+    @app.post("/control/set_system_audio")
+    def control_set_system_audio(req: ToggleRequest):
+        engine.set_system_audio(req.enabled)
+        return {"ok": True, "system_audio_enabled": engine.system_audio_enabled}
+
+    @app.post("/control/set_loopback_device")
+    def control_set_loopback_device(req: SetMicRequest):
+        try:
+            engine.set_loopback_device(req.device_index)
+            return {"ok": True, "loopback_device_index": engine.config.cfg.get("loopback_device_index")}
         except Exception as e:
             raise HTTPException(400, str(e))
 
@@ -380,7 +411,16 @@ def create_app(engine) -> FastAPI:
     @app.post("/config")
     def update_config(body: dict):
         """Partial config update. Merges and applies relevant changes immediately."""
-        engine.config.cfg.update(body)
+        # Deep merge: a partial body like {"dsp": {"noise_gate": {...}}} must
+        # not wipe out sibling sections (compressor, etc.) the way a shallow
+        # dict.update() would.
+        def _deep_merge(dst: dict, src: dict):
+            for k, v in src.items():
+                if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                    _deep_merge(dst[k], v)
+                else:
+                    dst[k] = v
+        _deep_merge(engine.config.cfg, body)
 
         if "llm_mode" in body:
             engine._apply_mode(body["llm_mode"])
@@ -428,7 +468,7 @@ def create_app(engine) -> FastAPI:
                         chain.gate.configure(**body["dsp"]["noise_gate"])
                     if "compressor" in body["dsp"]:
                         chain.compressor.configure(**body["dsp"]["compressor"])
-                except ValueError as e:
+                except (ValueError, TypeError) as e:
                     raise HTTPException(400, str(e))
                 engine._save_dsp_config()
 

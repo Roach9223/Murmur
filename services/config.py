@@ -7,21 +7,27 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULTS = {
-    "whisper_model": "large-v3",
+    "whisper_model": "Purfview/faster-distil-whisper-large-v3.5",
     "mic_device_index": 0,
     "hotkey": "f1",
     "energy_threshold": 0.01,
     "silence_timeout": 1.5,
     "max_speech_seconds": 15,
     "audio_queue_maxsize": 500,
-    "llm_cleanup": True,
+    "llm_cleanup": False,
     "llm_model": "lmstudio-community/Qwen2.5-7B-Instruct-GGUF",
     "llm_system_prompt_file": "prompts/clean_system.txt",
     "llm_temperature": 0.1,
     "llm_max_tokens": 500,
-    "llm_mode": "clean",
+    "llm_mode": "raw",
     "approval_mode": False,
     "push_to_talk": False,
+    "system_audio_enabled": False,
+    "loopback_device_index": None,
+    "loopback_device_name": "",
+    "loopback_gain": 1.0,
+    "conversation_log": True,
+    "media_hotkey": "",
     "command_prefix": "command",
     "voice_commands": {
         "new line": "enter",
@@ -30,6 +36,8 @@ DEFAULTS = {
         "clear": "select_all_delete",
         "stop dictation": "stop",
         "stop dictating": "stop",
+        "undo": "undo",
+        "redo": "redo",
     },
 }
 
@@ -71,23 +79,26 @@ DEFAULT_LLM_MODES = {
         "llm_system_prompt_file": "prompts/prompt_system.txt",
         "llm_temperature": 0.3,
         "llm_max_tokens": 1000,
+        "llm_max_output_ratio": 3.0,
     },
     "dev": {
         "llm_cleanup": True,
         "llm_system_prompt_file": "prompts/dev_system.txt",
         "llm_temperature": 0.2,
         "llm_max_tokens": 1000,
+        "llm_max_output_ratio": 3.0,
     },
     "detailed": {
         "llm_cleanup": True,
         "llm_system_prompt_file": "prompts/detailed_system.txt",
         "llm_temperature": 0.2,
         "llm_max_tokens": 1000,
+        "llm_max_output_ratio": 8.0,
     },
 }
 
 DEFAULT_PROFILES = {
-    "Default": {"llm_mode": "clean"},
+    "Default": {"llm_mode": "raw"},
 }
 
 DEFAULT_AUTO_DETECT = {
@@ -132,6 +143,7 @@ DEFAULT_DSP = {
         "hold_ms": 100.0,
         "attack_ms": 5.0,
         "release_ms": 150.0,
+        "cal_speech_margin_db": 20.0,
     },
     "compressor": {
         "enabled": False,
@@ -175,7 +187,7 @@ class ConfigManager:
         if "auto_detect" not in self.cfg:
             self.cfg["auto_detect"] = dict(DEFAULT_AUTO_DETECT)
         if "llm_mode" not in self.cfg:
-            self.cfg["llm_mode"] = "clean"
+            self.cfg["llm_mode"] = "raw"
         # VAD: inject defaults if missing
         if "vad" not in self.cfg:
             self.cfg["vad"] = dict(DEFAULT_VAD)
@@ -248,9 +260,9 @@ class ConfigManager:
     def resolve_mode(self, mode_name: str) -> dict:
         """Merge global defaults with mode-specific config."""
         if mode_name not in self.cfg["llm_modes"]:
-            mode_name = "clean"
+            mode_name = "raw"
         result = {
-            "llm_cleanup": self.cfg.get("llm_cleanup", True),
+            "llm_cleanup": self.cfg.get("llm_cleanup", False),
             "llm_system_prompt_file": self.cfg.get("llm_system_prompt_file", "prompts/clean_system.txt"),
             "llm_temperature": self.cfg.get("llm_temperature", 0.1),
             "llm_max_tokens": self.cfg.get("llm_max_tokens", 500),
@@ -264,7 +276,7 @@ class ConfigManager:
         if profile_name not in profiles:
             profile_name = next(iter(profiles))
         profile = profiles[profile_name]
-        mode_name = profile.get("llm_mode", self.cfg.get("llm_mode", "clean"))
+        mode_name = profile.get("llm_mode", self.cfg.get("llm_mode", "raw"))
         result = dict(self.cfg)
         result.update(self.resolve_mode(mode_name))
         for k, v in profile.items():

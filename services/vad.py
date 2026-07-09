@@ -1,10 +1,18 @@
 """Silero VAD wrapper for real-time speech boundary detection."""
 
 import logging
+import socket
 
 import numpy as np
-import torch
 from scipy.signal import resample_poly
+
+# torch is only needed for Silero VAD and is not shipped in the bundled
+# release (it's ~4GB). Without it, load_model() reports failure and the app
+# falls back to RMS-threshold silence detection.
+try:
+    import torch
+except ImportError:
+    torch = None
 
 from services.config import RECORD_RATE, WHISPER_RATE
 
@@ -38,13 +46,22 @@ class VoiceActivityDetector:
 
     def load_model(self) -> bool:
         """Load Silero VAD model via torch.hub. Returns True on success."""
+        if torch is None:
+            logger.warning("[vad] torch not available in this build — "
+                           "falling back to RMS threshold")
+            return False
         try:
-            self._model, _ = torch.hub.load(
-                repo_or_dir="snakers4/silero-vad",
-                model="silero_vad",
-                force_reload=False,
-                trust_repo=True,
-            )
+            original_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(30)
+            try:
+                self._model, _ = torch.hub.load(
+                    repo_or_dir="snakers4/silero-vad",
+                    model="silero_vad",
+                    force_reload=False,
+                    trust_repo=True,
+                )
+            finally:
+                socket.setdefaulttimeout(original_timeout)
             self._loaded = True
             logger.info("[vad] Silero VAD model loaded (window=%d samples)", self.window_size)
             return True

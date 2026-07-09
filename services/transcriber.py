@@ -19,60 +19,63 @@ class TranscriptionEngine:
         """Load the Whisper model. Call explicitly or it auto-loads on first transcribe()."""
         if self._model is not None:
             return
-        from faster_whisper import WhisperModel
+        # HF_HOME must be set BEFORE huggingface_hub is imported (it freezes
+        # cache paths at import time) — faster_whisper imports it transitively.
         if self._model_dir:
             os.makedirs(self._model_dir, exist_ok=True)
             os.environ["HF_HOME"] = self._model_dir
             logger.info("Model cache: %s", self._model_dir)
+        from faster_whisper import WhisperModel
         logger.info("Loading Whisper model...")
-        self._model = WhisperModel(self._model_size, device=self._device,
-                                   compute_type=self._compute_type)
-        logger.info("Model loaded.")
+        try:
+            self._model = WhisperModel(self._model_size, device=self._device,
+                                       compute_type=self._compute_type)
+        except Exception as e:
+            if self._device == "cuda":
+                logger.warning("CUDA model load failed (%s) — falling back to CPU int8. "
+                               "Transcription will be slower.", e)
+                self._device = "cpu"
+                self._compute_type = "int8"
+                self._model = WhisperModel(self._model_size, device="cpu",
+                                           compute_type="int8")
+            else:
+                raise
+        logger.info("Model loaded (device=%s, compute=%s).",
+                    self._device, self._compute_type)
 
     @property
     def is_loaded(self) -> bool:
         return self._model is not None
 
+    def _transcribe_kwargs(self) -> dict:
+        """Common transcription parameters for all Whisper models."""
+        return {
+            "language": "en",
+            "vad_filter": True,
+            "repetition_penalty": 1.2,
+            "no_repeat_ngram_size": 3,
+            "condition_on_previous_text": False,
+        }
+
     def transcribe(self, audio: np.ndarray) -> str:
         """Transcribe 16kHz float32 audio. Returns stripped text or empty string."""
         if self._model is None:
             self.load_model()
-        segments, _info = self._model.transcribe(
-            audio,
-            language="en",
-            vad_filter=True,
-            repetition_penalty=1.2,
-            no_repeat_ngram_size=3,
-            condition_on_previous_text=False,
-        )
+        segments, _info = self._model.transcribe(audio, **self._transcribe_kwargs())
         return "".join(seg.text for seg in segments).strip()
 
     def transcribe_file(self, file_path: str) -> str:
         """Transcribe an audio file from disk. Supports WAV, MP3, FLAC, M4A."""
         if self._model is None:
             self.load_model()
-        segments, _info = self._model.transcribe(
-            file_path,
-            language="en",
-            vad_filter=True,
-            repetition_penalty=1.2,
-            no_repeat_ngram_size=3,
-            condition_on_previous_text=False,
-        )
+        segments, _info = self._model.transcribe(file_path, **self._transcribe_kwargs())
         return "".join(seg.text for seg in segments).strip()
 
     def transcribe_file_with_progress(self, file_path: str, progress_callback=None) -> str:
         """Transcribe an audio file, reporting progress via callback."""
         if self._model is None:
             self.load_model()
-        segments, info = self._model.transcribe(
-            file_path,
-            language="en",
-            vad_filter=True,
-            repetition_penalty=1.2,
-            no_repeat_ngram_size=3,
-            condition_on_previous_text=False,
-        )
+        segments, info = self._model.transcribe(file_path, **self._transcribe_kwargs())
         total_duration = info.duration if info.duration and info.duration > 0 else 1.0
         parts = []
         for seg in segments:

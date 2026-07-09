@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 
 import requests
 
@@ -128,7 +129,7 @@ class LlamaCppBackend(LLMBackend):
 
 
 _REFUSAL_RE = re.compile(
-    r"(?i)^(I cannot|I can't|I'm unable|I am unable|I'm sorry|"
+    r"(?i)(I cannot|I can't|I'm unable|I am unable|I'm sorry|"
     r"Sorry,? I|I apologize|I don't think I|I must decline|"
     r"I'm not able|As an AI|I am not able)"
 )
@@ -144,6 +145,7 @@ class LLMEnhancer:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self.max_output_ratio = 1.5
         self.backend = backend or LMStudioBackend()
 
     @property
@@ -168,11 +170,16 @@ class LLMEnhancer:
         self._resolved_model = None
         old.close()
 
-    def configure(self, system_prompt: str, temperature: float, max_tokens: int):
+    def configure(self, system_prompt: str, temperature: float, max_tokens: int,
+                  max_output_ratio: float = 1.5):
         """Swap LLM parameters at runtime for mode/profile switching."""
         self.system_prompt = system_prompt
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.max_output_ratio = max_output_ratio
+
+    _MAX_RETRIES = 2
+    _RETRY_BASE_DELAY = 0.3
 
     def cleanup(self, text: str) -> str:
         """Send text to the LLM backend for cleanup. Falls back to raw text on error."""
@@ -181,46 +188,65 @@ class LLMEnhancer:
         if not self._resolved_model:
             self._resolve_model()
         wrapped = f"[TRANSCRIPTION]\n{text}\n[/TRANSCRIPTION]"
-        try:
-            content = self.backend.complete(
-                system_prompt=self.system_prompt,
-                user_text=wrapped,
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                timeout=self.timeout,
-            )
-            if content:
-                content = self._strip_reasoning(content)
-            else:
-                logger.warning("  [LLM] empty response — using raw text")
+
+        last_error = None
+        for attempt in range(self._MAX_RETRIES + 1):
+            try:
+                content = self.backend.complete(
+                    system_prompt=self.system_prompt,
+                    user_text=wrapped,
+                    model=self.model,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    timeout=self.timeout,
+                )
+                if content:
+                    content = self._strip_reasoning(content)
+                else:
+                    logger.warning("  [LLM] empty response — using raw text")
+                    return text
+
+                # Refusal detection — if model refused, fall back to raw text
+                if _REFUSAL_RE.search(content):
+                    logger.warning("  [LLM] refusal detected (%s) — using raw text",
+                                   content[:60])
+                    return text
+
+                # Hallucination guard — ratio is mode-aware: expanding modes
+                # (Detailed) legitimately produce output longer than the input
+                if len(content) > len(text) * self.max_output_ratio + 30:
+                    logger.warning("  [LLM output too long (%d vs %d) — using raw text]",
+                                   len(content), len(text))
+                    return text
+
+                if not content:
+                    logger.warning("  [LLM] empty after reasoning strip — using raw text")
+                    return text
+                return content
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code == 400:
+                    logger.warning("  [LLM 400 error — re-querying model list]")
+                    self._resolved_model = None
+                if e.response is not None and e.response.status_code < 500:
+                    logger.warning("  [LLM error: %s — using raw text]", e)
+                    return text
+                last_error = e
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as e:
+                last_error = e
+            except Exception as e:
+                logger.warning("  [LLM error: %s — using raw text]", e)
                 return text
 
-            # Refusal detection — if model refused, fall back to raw text
-            if _REFUSAL_RE.match(content):
-                logger.warning("  [LLM] refusal detected (%s) — using raw text",
-                               content[:60])
-                return text
+            if attempt < self._MAX_RETRIES:
+                delay = self._RETRY_BASE_DELAY * (2 ** attempt)
+                logger.info("  [LLM] Transient error, retrying in %.1fs (%d/%d)",
+                            delay, attempt + 1, self._MAX_RETRIES)
+                time.sleep(delay)
 
-            # Tighter hallucination guard
-            if len(content) > len(text) * 1.5 + 30:
-                logger.warning("  [LLM output too long (%d vs %d) — using raw text]",
-                               len(content), len(text))
-                return text
-
-            if not content:
-                logger.warning("  [LLM] empty after reasoning strip — using raw text")
-                return text
-            return content
-        except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 400:
-                logger.warning("  [LLM 400 error — re-querying model list]")
-                self._resolved_model = None
-            logger.warning("  [LLM error: %s — using raw text]", e)
-            return text
-        except Exception as e:
-            logger.warning("  [LLM error: %s — using raw text]", e)
-            return text
+        logger.warning("  [LLM error after %d attempts: %s — using raw text]",
+                        self._MAX_RETRIES + 1, last_error)
+        return text
 
     @staticmethod
     def _strip_reasoning(content: str) -> str:

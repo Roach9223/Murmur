@@ -1,6 +1,9 @@
+import logging
 import time
 
 from services.output import OutputInjector
+
+logger = logging.getLogger(__name__)
 
 
 class CommandRouter:
@@ -61,3 +64,10 @@ class CommandRouter:
             self.output.press_key("ctrl+c")
         elif action_name == "paste":
             self.output.press_key("ctrl+v")
+        elif action_name == "undo":
+            self.output.press_key("ctrl+z")
+        elif action_name == "redo":
+            self.output.press_key("ctrl+y")
+        else:
+            logger.warning("  [cmd] Unknown action %r — check voice_commands in config.json",
+                           action_name)

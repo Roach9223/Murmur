@@ -12,6 +12,66 @@ from services.config import RECORD_RATE, WHISPER_RATE, CHANNELS
 
 logger = logging.getLogger(__name__)
 
+# Largest audio block we mix per callback. Matches the DSP chain's block cap
+# (services.dsp.NoiseGate.MAX_BLOCKSIZE); WASAPI blocks (blocksize=0) stay well under.
+_MAX_BLOCKSIZE = 4096
+
+# Substrings that flag a likely loopback/system-audio capture device by name.
+_LOOPBACK_NAME_HINTS = ("loopback", "cable output", "stereo mix", "what u hear", "vb-audio")
+
+
+class _LoopbackRing:
+    """Single-producer / single-consumer "newest-N" ring for the loopback stream.
+
+    The loopback callback (producer) writes mono frames; the mic callback (consumer)
+    reads the most-recent N samples each block. Lock-free under CPython's GIL: the
+    write index (`_wpos`) is published with a single atomic store, and the consumer
+    only ever reads a window ending at the current head — a torn read at the wrap
+    boundary costs at worst a few stale samples mixed under speech, inaudible to ASR.
+    """
+
+    def __init__(self, capacity: int):
+        self._cap = int(capacity)
+        self._buf = np.zeros(self._cap, dtype=np.float32)
+        self._wpos = 0  # next write index; published last
+
+    def zero(self):
+        self._buf[:] = 0
+        self._wpos = 0
+
+    def write(self, samples: np.ndarray):
+        """Producer thread only."""
+        n = len(samples)
+        if n >= self._cap:  # block larger than ring: keep the tail
+            self._buf[:] = samples[-self._cap:]
+            self._wpos = 0
+            return
+        w = self._wpos
+        end = w + n
+        if end <= self._cap:
+            self._buf[w:end] = samples
+        else:
+            first = self._cap - w
+            self._buf[w:] = samples[:first]
+            self._buf[:n - first] = samples[first:]
+        self._wpos = end % self._cap  # single atomic publish
+
+    def read_last(self, n: int, out: np.ndarray):
+        """Consumer thread only. Fill out[:n] with the most recent n samples."""
+        cap = self._cap
+        if n > cap:
+            out[:n] = 0
+            n = cap
+        w = self._wpos  # single atomic snapshot
+        start = (w - n) % cap
+        end = start + n
+        if end <= cap:
+            out[:n] = self._buf[start:end]
+        else:
+            first = cap - start
+            out[:first] = self._buf[start:]
+            out[first:n] = self._buf[:n - first]
+
 
 class AudioCaptureService:
     _MAX_CONSECUTIVE_ERRORS = 50
@@ -35,10 +95,22 @@ class AudioCaptureService:
         self._dsp_chain = dsp_chain
         self._live_rms = 0.0
         self._queue_drops = 0
+        self._queue_drop_t0 = time.monotonic()
 
         # --- WAV recording tap (independent of dictation) ---
         self._wav_recorder = None
         self._record_pre_dsp = False
+
+        # --- System-audio loopback (second input stream, mixed into the mic) ---
+        self._loopback_enabled = False
+        self._loopback_gain = 1.0
+        self._loopback_device_index: int | None = None
+        self._loopback_stream = None
+        self._loopback_error_count = 0
+        self._loopback_ring = _LoopbackRing(int(0.5 * RECORD_RATE))  # 0.5s drift tolerance
+        # Consumer-owned scratch (mic callback): newest-N loopback read + mixed output
+        self._lb_read = np.empty(_MAX_BLOCKSIZE, dtype=np.float32)
+        self._mix_buf = np.empty(_MAX_BLOCKSIZE, dtype=np.float32)
 
         # --- Spectrum / FFT state ---
         # Blackman-Harris 4-term window: >92dB sidelobe rejection (vs Hann's 32dB)
@@ -101,8 +173,24 @@ class AudioCaptureService:
         else:
             processed = mono
 
-        # Always-on RMS for UI metering
-        self._live_rms = float(np.sqrt(np.mean(processed ** 2)))
+        # Mix in system-audio loopback (if enabled). DSP stays mic-only so the
+        # friend's audio passes through ungated/uncompressed. Mix into a dedicated
+        # buffer — `processed` is a view into the DSP chain's shared scratch.
+        if self._loopback_enabled:
+            m = len(processed)
+            mixed = self._mix_buf[:m]
+            np.copyto(mixed, processed)
+            self._loopback_ring.read_last(m, self._lb_read)
+            lb = self._lb_read[:m]
+            if self._loopback_gain != 1.0:
+                np.multiply(lb, self._loopback_gain, out=lb)
+            mixed += lb
+            np.clip(mixed, -1.0, 1.0, out=mixed)
+        else:
+            mixed = processed
+
+        # Always-on RMS for UI metering (reflects the mixed signal that is transcribed)
+        self._live_rms = float(np.sqrt(np.mean(mixed ** 2)))
 
         n = len(mono)
         with self._ring_lock:
@@ -128,9 +216,9 @@ class AudioCaptureService:
             self._samples_since_fft += n
 
         if self.recording:
-            rms = float(np.sqrt(np.mean(processed ** 2)))
-            out = processed.reshape(-1, 1) if indata.ndim > 1 else processed
-            item = (out.copy() if out.base is not None else out, rms)
+            rms = float(np.sqrt(np.mean(mixed ** 2)))
+            out = mixed.reshape(-1, 1) if indata.ndim > 1 else mixed
+            item = (out.copy(), rms)  # mixed reuses _mix_buf each block — always copy
             try:
                 self.audio_q.put_nowait(item)
             except queue.Full:
@@ -144,12 +232,34 @@ class AudioCaptureService:
                     pass
                 self._queue_drops += 1
                 if self._queue_drops % 100 == 1:
-                    logger.warning("Audio queue full — dropped %d chunks", self._queue_drops)
+                    elapsed = time.monotonic() - self._queue_drop_t0
+                    rate = self._queue_drops / max(elapsed, 0.001)
+                    logger.warning("Audio queue full — dropped %d chunks (%.1f drops/sec)",
+                                   self._queue_drops, rate)
 
         # WAV recording tap (independent of dictation recording)
         if self._wav_recorder is not None and self._wav_recorder.is_recording:
             source = mono if self._record_pre_dsp else processed
             self._wav_recorder.push(source)
+
+    def _loopback_callback(self, indata, frames, time_info, status):
+        """Producer for the loopback ring. Downmix stereo->mono, then publish.
+
+        Errors are isolated from the mic stream — a loopback fault never flags the
+        mic for restart; persistent faults just auto-disable loopback.
+        """
+        if status:
+            self._loopback_error_count += 1
+            if self._loopback_error_count >= self._MAX_CONSECUTIVE_ERRORS and self._loopback_enabled:
+                logger.warning("Loopback: %d consecutive errors, auto-disabling", self._loopback_error_count)
+                self._loopback_enabled = False
+            return
+        self._loopback_error_count = 0
+        if indata.ndim > 1 and indata.shape[1] > 1:
+            mono = indata.mean(axis=1)  # downmix L/R
+        else:
+            mono = indata[:, 0] if indata.ndim > 1 else indata.squeeze()
+        self._loopback_ring.write(mono)
 
     def start_stream(self):
         """Open the mic stream (always on). Call start_recording()/stop_recording() to control capture."""
@@ -219,6 +329,7 @@ class AudioCaptureService:
             except queue.Empty:
                 break
         self._queue_drops = 0
+        self._queue_drop_t0 = time.monotonic()
         self.recording = True
 
     def stop_recording(self):
@@ -325,6 +436,128 @@ class AudioCaptureService:
             self.device_index = old_index
             time.sleep(0.3)
             self.start_stream()
+
+    # --- System-audio loopback ---
+
+    @property
+    def loopback_enabled(self) -> bool:
+        return self._loopback_enabled
+
+    @property
+    def loopback_device_index(self) -> int | None:
+        return self._loopback_device_index
+
+    def set_loopback_gain(self, gain: float):
+        self._loopback_gain = max(0.0, float(gain))
+
+    def get_loopback_device_name(self) -> str:
+        if self._loopback_device_index is None:
+            return ""
+        try:
+            return sd.query_devices(self._loopback_device_index)['name']
+        except Exception:
+            return f"Device {self._loopback_device_index}"
+
+    def enable_loopback(self, index: int) -> bool:
+        """Open a second input stream on a loopback device and mix it into the mic.
+
+        Independent of the mic stream — a failure here never touches the mic.
+        Returns True on success.
+        """
+        if index is None:
+            return False
+        if index == self.device_index:
+            logger.error("Loopback: device %d is the active mic — refusing to loop it back", index)
+            return False
+        # Already running on this device? no-op.
+        if self._loopback_stream is not None and self._loopback_device_index == index:
+            return True
+        # Switching devices: tear down the old stream first.
+        if self._loopback_stream is not None:
+            self.disable_loopback()
+        try:
+            info = sd.query_devices(index)
+            channels = min(2, int(info['max_input_channels'])) or 1
+            sd.check_input_settings(device=index, samplerate=RECORD_RATE,
+                                    channels=channels, dtype="float32")
+            stream = sd.InputStream(
+                samplerate=RECORD_RATE,
+                channels=channels,
+                device=index,
+                dtype="float32",
+                callback=self._loopback_callback,
+                blocksize=0,
+            )
+            stream.start()
+        except Exception as e:
+            logger.error("Loopback: failed to open device %d: %s", index, e)
+            return False
+        time.sleep(0.3)  # WASAPI settle
+        self._loopback_stream = stream
+        self._loopback_device_index = index
+        self._loopback_error_count = 0
+        self._loopback_ring.zero()
+        self._loopback_enabled = True  # publish flag last
+        logger.info("Loopback: capturing system audio from device %d (%s)", index, info['name'])
+        return True
+
+    def disable_loopback(self):
+        """Stop and close the loopback stream. Safe to call when already off."""
+        self._loopback_enabled = False  # stop the mic callback mixing first
+        if self._loopback_stream is not None:
+            try:
+                self._loopback_stream.stop()
+                self._loopback_stream.close()
+            except Exception as e:
+                logger.warning("Loopback: error stopping stream: %s", e)
+            self._loopback_stream = None
+        self._loopback_device_index = None
+
+    def switch_loopback_device(self, index: int) -> bool:
+        """Switch the loopback source at runtime. No-op if unchanged."""
+        if index == self._loopback_device_index:
+            return True
+        return self.enable_loopback(index)
+
+    _loopback_cache: list[dict] | None = None
+    _loopback_cache_t: float = 0.0
+    _LOOPBACK_CACHE_TTL = 5.0  # seconds — /status polls at 20Hz; don't probe every time
+
+    @staticmethod
+    def enumerate_loopback_devices() -> list[dict]:
+        """Input devices usable as loopback sources, flagged + 48kHz-checked.
+
+        Returns [{index, name, is_default, is_loopback, supported}] where
+        is_loopback flags names that look like system-audio captures and
+        supported indicates the device accepts 48kHz float32 input.
+
+        Cached for a few seconds: check_input_settings probes PortAudio per
+        device, which is too expensive to run on every /status poll.
+        """
+        now = time.monotonic()
+        if (AudioCaptureService._loopback_cache is not None
+                and now - AudioCaptureService._loopback_cache_t < AudioCaptureService._LOOPBACK_CACHE_TTL):
+            return AudioCaptureService._loopback_cache
+        result = []
+        for dev in AudioCaptureService.enumerate_input_devices():
+            name_l = dev["name"].lower()
+            channels = min(2, int(dev["channels"])) or 1
+            try:
+                sd.check_input_settings(device=dev["index"], samplerate=RECORD_RATE,
+                                        channels=channels, dtype="float32")
+                supported = True
+            except Exception:
+                supported = False
+            result.append({
+                "index": dev["index"],
+                "name": dev["name"],
+                "is_default": dev["is_default"],
+                "is_loopback": any(h in name_l for h in _LOOPBACK_NAME_HINTS),
+                "supported": supported,
+            })
+        AudioCaptureService._loopback_cache = result
+        AudioCaptureService._loopback_cache_t = now
+        return result
 
     @property
     def live_rms(self) -> float:

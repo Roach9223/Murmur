@@ -1,13 +1,14 @@
 {
-  "whisper_model": "large-v3",
+  "whisper_model": "Purfview/faster-distil-whisper-large-v3.5",
   "mic_device_index": 0,
   "hotkey": "f1",
+  "media_hotkey": "",
   "energy_threshold": 0.01,
   "silence_timeout": 1.5,
   "max_speech_seconds": 15,
-  "llm_cleanup": true,
+  "llm_cleanup": false,
   "llm_model": "qwen3-4b-instruct-2507-ud-gguf",
-  "llm_mode": "clean",
+  "llm_mode": "raw",
   "command_prefix": "command",
   "voice_commands": {
     "new line": "shift_enter",
@@ -17,7 +18,9 @@
     "copy": "copy",
     "paste": "paste",
     "stop dictation": "stop",
-    "stop dictating": "stop"
+    "stop dictating": "stop",
+    "undo": "undo",
+    "redo": "redo"
   },
   "llm_modes": {
     "raw": {
@@ -34,24 +37,27 @@
       "llm_system_prompt_file": "prompts/prompt_system.txt",
       "llm_temperature": 0.3,
       "llm_max_tokens": 1000,
+      "llm_max_output_ratio": 3.0,
       "newline_key": "shift+enter"
     },
     "dev": {
       "llm_cleanup": true,
       "llm_system_prompt_file": "prompts/dev_system.txt",
       "llm_temperature": 0.2,
-      "llm_max_tokens": 1000
+      "llm_max_tokens": 1000,
+      "llm_max_output_ratio": 3.0
     },
     "detailed": {
       "llm_cleanup": true,
       "llm_system_prompt_file": "prompts/detailed_system.txt",
       "llm_temperature": 0.2,
-      "llm_max_tokens": 1000
+      "llm_max_tokens": 1000,
+      "llm_max_output_ratio": 8.0
     }
   },
   "profiles": {
     "Default": {
-      "llm_mode": "clean"
+      "llm_mode": "raw"
     },
     "Terminal": {
       "llm_mode": "raw"
