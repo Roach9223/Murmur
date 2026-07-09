@@ -3,6 +3,10 @@
 #include "engine_client.h"
 #include "engine_process.h"
 
+#include <future>
+#include <string>
+#include <vector>
+
 class DictationApp {
 public:
     DictationApp(EngineClient& engine, EngineProcess& process);
@@ -16,6 +20,7 @@ private:
     char m_editBuffer[4096] = {};
     bool m_editActive = false;
     bool m_capturingHotkey = false;
+    bool m_capturingMediaHotkey = false;
     bool m_showAbout = false;
     bool m_showInstructions = false;
     bool m_requestQuit = false;
@@ -69,8 +74,12 @@ private:
     std::string m_lastTranscriptStatus;  // "Done! ..." or error
     double m_transcriptFlashTime = 0.0;
     bool m_showTranscriptionPopup = false;
-    int m_saveStyleIdx = 2;  // 0=Raw, 1=Clean, 2=Detailed, 3=Summarize
+    int m_saveStyleIdx = 0;  // 0=Raw, 1=Clean, 2=Detailed, 3=Summarize — Raw works without an LLM backend
     char m_saveFilename[256] = "";
     std::vector<std::string> m_transcriptLogLines;
     double m_lastLogFetchTime = 0.0;
+
+    // Async fetches — slow HTTP must never run on the render thread
+    std::future<std::string> m_calPromptFuture;
+    std::future<std::vector<std::string>> m_logTailFuture;
 };

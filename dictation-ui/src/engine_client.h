@@ -53,6 +53,7 @@ struct EngineStatus {
     bool recording = false;
     bool model_loading = false;
     std::string hotkey;
+    std::string media_hotkey;
 
     std::vector<std::string> mode_names;
     std::vector<std::string> profile_names;
@@ -68,6 +69,20 @@ struct EngineStatus {
     std::vector<InputDevice> input_devices;
     int mic_device_index = -1;
     std::string mic_device_name;
+
+    struct LoopbackDevice {
+        int index = -1;
+        std::string name;
+        bool is_default = false;
+        bool is_loopback = false;
+        bool supported = true;
+    };
+    bool system_audio_enabled = false;
+    int loopback_device_index = -1;
+    std::string loopback_device_name;
+    std::vector<LoopbackDevice> loopback_devices;
+    bool conversation_log_active = false;
+    std::string conversation_log_path;
 
     struct Latency {
         float record_ms = 0.0f;
@@ -134,7 +149,11 @@ public:
     bool EditPending(const std::string& text);
     bool RejectPending();
     bool SetHotkey(const std::string& key);
+    bool SetMediaHotkey(const std::string& key);
+    bool MediaPlayPause();
     bool SetMicDevice(int device_index);
+    bool SetSystemAudio(bool enabled);
+    bool SetLoopbackDevice(int device_index);
 
     bool SetLLMBackend(const std::string& type);
     bool SetLLMBackendURL(const std::string& url);

@@ -5,7 +5,17 @@
 
 namespace fs = std::filesystem;
 
-EngineProcess::EngineProcess(const std::string& engineDir, int port)
+// Lossless UTF-16 -> UTF-8 for display/error strings
+static std::string WideToUtf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string s(len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), len, nullptr, nullptr);
+    return s;
+}
+
+EngineProcess::EngineProcess(const std::wstring& engineDir, int port)
     : m_engineDir(engineDir), m_port(port)
 {
     // Detect bundled mode: engine/murmur-engine.exe next to Murmur.exe
@@ -20,16 +30,17 @@ EngineProcess::~EngineProcess() {
 
     if (m_processHandle) CloseHandle(m_processHandle);
     if (m_threadHandle)  CloseHandle(m_threadHandle);
+    if (m_jobHandle)     CloseHandle(m_jobHandle);
 }
 
-std::string EngineProcess::DiscoverEngineDir() {
+std::wstring EngineProcess::DiscoverEngineDirW() {
     wchar_t exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     fs::path exeDir = fs::path(exePath).parent_path();
 
     // 1) Bundled mode: engine/murmur-engine.exe next to our exe
     if (fs::exists(exeDir / "engine" / "murmur-engine.exe")) {
-        return exeDir.string();
+        return exeDir.wstring();
     }
 
     // 2) Dev mode: walk up to find app.py + venv
@@ -37,7 +48,7 @@ std::string EngineProcess::DiscoverEngineDir() {
     for (int i = 0; i < 6; ++i) {
         p = p.parent_path();
         if (fs::exists(p / "app.py") && fs::exists(p / "venv")) {
-            return p.string();
+            return p.wstring();
         }
     }
     return {};
@@ -53,26 +64,31 @@ bool EngineProcess::Launch() {
         // Bundled mode: engine/murmur-engine.exe --server --port N --base-dir <dir>
         fs::path engineExe = fs::path(m_engineDir) / "engine" / "murmur-engine.exe";
         if (!fs::exists(engineExe)) {
-            m_error = "murmur-engine.exe not found: " + engineExe.string();
+            m_error = "murmur-engine.exe not found: " + WideToUtf8(engineExe.wstring());
             m_state = State::FAILED;
             return false;
         }
+        // Strip trailing separators: a dir like "F:\" would put a backslash
+        // before the closing quote and escape it, mangling the argument.
+        std::wstring baseDir = fs::path(m_engineDir).wstring();
+        while (!baseDir.empty() && (baseDir.back() == L'\\' || baseDir.back() == L'/'))
+            baseDir.pop_back();
         cmdLine =
             L"\"" + engineExe.wstring() + L"\" " +
             L"--server --port " + std::to_wstring(m_port) +
-            L" --base-dir \"" + fs::path(m_engineDir).wstring() + L"\"";
+            L" --base-dir \"" + baseDir + L"\"";
     } else {
         // Dev mode: pythonw.exe app.py --server --port N
         fs::path pythonExe = fs::path(m_engineDir) / "venv" / "Scripts" / "pythonw.exe";
         fs::path appPy = fs::path(m_engineDir) / "app.py";
 
         if (!fs::exists(pythonExe)) {
-            m_error = "pythonw.exe not found: " + pythonExe.string();
+            m_error = "pythonw.exe not found: " + WideToUtf8(pythonExe.wstring());
             m_state = State::FAILED;
             return false;
         }
         if (!fs::exists(appPy)) {
-            m_error = "app.py not found: " + appPy.string();
+            m_error = "app.py not found: " + WideToUtf8(appPy.wstring());
             m_state = State::FAILED;
             return false;
         }
@@ -107,8 +123,39 @@ bool EngineProcess::Launch() {
     m_processHandle = pi.hProcess;
     m_threadHandle = pi.hThread;
     m_processId = pi.dwProcessId;
+
+    // Tie the engine's lifetime to ours: if Murmur.exe dies abnormally
+    // (crash, Task Manager kill), the job object kills the engine too.
+    if (!m_jobHandle) {
+        m_jobHandle = CreateJobObjectW(nullptr, nullptr);
+        if (m_jobHandle) {
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = {};
+            jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(m_jobHandle, JobObjectExtendedLimitInformation,
+                                    &jeli, sizeof(jeli));
+        }
+    }
+    if (m_jobHandle)
+        AssignProcessToJobObject(m_jobHandle, m_processHandle);
+
+    m_launched = true;
     m_state = State::RUNNING;
     return true;
+}
+
+EngineProcess::State EngineProcess::GetState() {
+    // Detect a child that died after a successful launch (port conflict,
+    // missing runtime, corrupted download) so the UI can show an error
+    // instead of "waiting for connection..." forever.
+    if (m_state == State::RUNNING && m_processHandle && !IsRunning()) {
+        DWORD exitCode = 0;
+        GetExitCodeProcess(m_processHandle, &exitCode);
+        m_error = "Engine process exited unexpectedly (exit code " +
+                  std::to_string(exitCode) + "). Check logs\\dictation.log, "
+                  "or another app may be using port " + std::to_string(m_port) + ".";
+        m_state = State::FAILED;
+    }
+    return m_state;
 }
 
 void EngineProcess::Terminate(int gracefulTimeoutMs) {

@@ -51,6 +51,14 @@ void EngineClient::PollLoop() {
     }
 }
 
+// Identity check: only treat the server as our engine if it looks like one.
+// Newer engines send "app": "murmur"; older ones send "status" + "version".
+static bool IsMurmurHealth(const json& j) {
+    if (j.value("app", std::string{}) == "murmur")
+        return true;
+    return j.contains("status") && j.contains("version") && j.contains("uptime_s");
+}
+
 bool EngineClient::PollHealth() {
     httplib::Client cli(m_host, m_port);
     cli.set_connection_timeout(1);
@@ -58,13 +66,17 @@ bool EngineClient::PollHealth() {
 
     auto res = cli.Get("/health");
     if (res && res->status == 200) {
-        auto j = json::parse(res->body, nullptr, false);
-        if (!j.is_discarded()) {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_status.connected = true;
-            m_status.version = j.value("version", std::string{});
-            m_status.uptime_s = j.value("uptime_s", 0.0f);
-            return true;
+        try {
+            auto j = json::parse(res->body, nullptr, false);
+            if (j.is_object() && IsMurmurHealth(j)) {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_status.connected = true;
+                m_status.version = j.value("version", std::string{});
+                m_status.uptime_s = j.value("uptime_s", 0.0f);
+                return true;
+            }
+        } catch (const json::exception&) {
+            // Foreign server on our port returning unexpected JSON — treat as not connected
         }
     }
     return false;
@@ -77,9 +89,10 @@ bool EngineClient::PollStatus() {
 
     auto res = cli.Get("/status");
     if (res && res->status == 200) {
-        auto j = json::parse(res->body, nullptr, false);
-        if (!j.is_discarded()) {
-            std::lock_guard<std::mutex> lock(m_mutex);
+        try {
+            auto j = json::parse(res->body, nullptr, false);
+            if (j.is_object()) {
+                std::lock_guard<std::mutex> lock(m_mutex);
             m_status.phase = j.value("state", std::string{"unknown"});
             m_status.current_mode = j.value("current_mode", std::string{});
             m_status.current_profile = j.value("current_profile", std::string{});
@@ -96,6 +109,7 @@ bool EngineClient::PollStatus() {
             m_status.recording = j.value("recording", false);
             m_status.model_loading = j.value("model_loading", false);
             m_status.hotkey = j.value("hotkey", std::string{"f1"});
+            m_status.media_hotkey = j.value("media_hotkey", std::string{});
 
             m_status.mode_names.clear();
             if (j.contains("mode_names") && j["mode_names"].is_array())
@@ -121,6 +135,31 @@ bool EngineClient::PollStatus() {
             }
             m_status.mic_device_index = j.value("mic_device_index", -1);
             m_status.mic_device_name = j.value("mic_device_name", std::string{});
+
+            // System audio (loopback)
+            m_status.system_audio_enabled = j.value("system_audio_enabled", false);
+            {
+                auto li = j.value("loopback_device_index", nlohmann::json(nullptr));
+                m_status.loopback_device_index = li.is_number_integer() ? li.get<int>() : -1;
+            }
+            m_status.loopback_device_name = j.value("loopback_device_name", std::string{});
+            m_status.conversation_log_active = j.value("conversation_log_active", false);
+            {
+                auto cp = j.value("conversation_log_path", nlohmann::json(nullptr));
+                m_status.conversation_log_path = cp.is_string() ? cp.get<std::string>() : "";
+            }
+            m_status.loopback_devices.clear();
+            if (j.contains("loopback_devices") && j["loopback_devices"].is_array()) {
+                for (auto& d : j["loopback_devices"]) {
+                    EngineStatus::LoopbackDevice dev;
+                    dev.index = d.value("index", -1);
+                    dev.name = d.value("name", std::string{});
+                    dev.is_default = d.value("is_default", false);
+                    dev.is_loopback = d.value("is_loopback", false);
+                    dev.supported = d.value("supported", true);
+                    m_status.loopback_devices.push_back(dev);
+                }
+            }
 
             if (j.contains("latency_ms")) {
                 auto& lat = j["latency_ms"];
@@ -204,6 +243,9 @@ bool EngineClient::PollStatus() {
             }
 
             return true;
+            }
+        } catch (const json::exception&) {
+            // Malformed field types from a foreign or mismatched server — skip this poll
         }
     }
     return false;
@@ -217,13 +259,16 @@ bool EngineClient::PollHealthOnce() {
 
     auto res = cli.Get("/health");
     if (res && res->status == 200) {
-        auto j = json::parse(res->body, nullptr, false);
-        if (!j.is_discarded()) {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_status.connected = true;
-            m_status.version = j.value("version", std::string{});
-            m_status.uptime_s = j.value("uptime_s", 0.0f);
-            return true;
+        try {
+            auto j = json::parse(res->body, nullptr, false);
+            if (j.is_object() && IsMurmurHealth(j)) {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_status.connected = true;
+                m_status.version = j.value("version", std::string{});
+                m_status.uptime_s = j.value("uptime_s", 0.0f);
+                return true;
+            }
+        } catch (const json::exception&) {
         }
     }
     return false;
@@ -342,12 +387,47 @@ bool EngineClient::SetHotkey(const std::string& key) {
     return res && res->status == 200;
 }
 
+bool EngineClient::SetMediaHotkey(const std::string& key) {
+    httplib::Client cli(m_host, m_port);
+    cli.set_connection_timeout(2);
+    cli.set_read_timeout(2);
+    json body = {{"hotkey", key}};
+    auto res = cli.Post("/control/set_media_hotkey", body.dump(), "application/json");
+    return res && res->status == 200;
+}
+
+bool EngineClient::MediaPlayPause() {
+    httplib::Client cli(m_host, m_port);
+    cli.set_connection_timeout(2);
+    cli.set_read_timeout(2);
+    auto res = cli.Post("/control/media_play_pause", "", "application/json");
+    return res && res->status == 200;
+}
+
 bool EngineClient::SetMicDevice(int device_index) {
     httplib::Client cli(m_host, m_port);
     cli.set_connection_timeout(2);
     cli.set_read_timeout(5);
     json body = {{"device_index", device_index}};
     auto res = cli.Post("/control/set_mic", body.dump(), "application/json");
+    return res && res->status == 200;
+}
+
+bool EngineClient::SetSystemAudio(bool enabled) {
+    httplib::Client cli(m_host, m_port);
+    cli.set_connection_timeout(2);
+    cli.set_read_timeout(5);  // opening the loopback stream can take a moment
+    json body = {{"enabled", enabled}};
+    auto res = cli.Post("/control/set_system_audio", body.dump(), "application/json");
+    return res && res->status == 200;
+}
+
+bool EngineClient::SetLoopbackDevice(int device_index) {
+    httplib::Client cli(m_host, m_port);
+    cli.set_connection_timeout(2);
+    cli.set_read_timeout(5);
+    json body = {{"device_index", device_index}};
+    auto res = cli.Post("/control/set_loopback_device", body.dump(), "application/json");
     return res && res->status == 200;
 }
 
@@ -420,7 +500,7 @@ std::string EngineClient::FetchCalibrationPrompt() {
     auto res = cli.Get("/calibrate/prompt");
     if (res && res->status == 200) {
         auto j = json::parse(res->body, nullptr, false);
-        if (!j.is_discarded() && j.contains("prompt"))
+        if (!j.is_discarded() && j.is_object() && j.contains("prompt") && j["prompt"].is_string())
             return j["prompt"].get<std::string>();
     }
     return "The quick brown fox jumps over the lazy dog near the river bank.";

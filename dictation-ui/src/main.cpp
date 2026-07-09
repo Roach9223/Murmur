@@ -188,7 +188,7 @@ int main(int, char**)
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
     // Discover engine directory and create process manager
-    std::string engineDir = EngineProcess::DiscoverEngineDir();
+    std::wstring engineDir = EngineProcess::DiscoverEngineDirW();
     EngineProcess engineProc(engineDir, 8899);
 
     // Create engine client
@@ -257,10 +257,13 @@ int main(int, char**)
         g_pSwapChain->Present(1, 0);  // vsync
     }
 
-    // Cleanup
+    // Cleanup — only shut down an engine we launched. If the user started
+    // `python app.py --server` themselves, closing the UI must not kill it.
     engine.StopPolling();
-    engine.Shutdown();
-    engineProc.Terminate();
+    if (engineProc.Launched()) {
+        engine.Shutdown();
+        engineProc.Terminate();
+    }
 
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();

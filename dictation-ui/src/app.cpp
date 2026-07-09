@@ -4,6 +4,9 @@
 #include <cstring>
 #include <cctype>
 #include <cmath>
+#include <chrono>
+#include <future>
+#include <thread>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -14,6 +17,20 @@
 
 // Semibold font for the voice-to-type banner (defined in main.cpp)
 extern ImFont* g_bannerFont;
+
+// The engine reports paths as UTF-8; Windows shell APIs need UTF-16.
+// Naive byte-widening mangles anything outside ASCII.
+static std::wstring Utf8ToWide(const std::string& s) {
+    if (s.empty()) return {};
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (len <= 0) return {};
+    std::wstring w(len - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), len);
+    return w;
+}
+
+static const char* kCalFallbackPrompt =
+    "The quick brown fox jumps over the lazy dog near the river bank.";
 
 DictationApp::DictationApp(EngineClient& engine, EngineProcess& process)
     : m_engine(engine), m_process(process) {}
@@ -43,8 +60,11 @@ void DictationApp::Render()
         // --- File menu ---
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("View Log")) {
-                std::string logPath = EngineProcess::DiscoverEngineDir() + "\\logs\\dictation.log";
-                ShellExecuteA(NULL, "open", logPath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                std::wstring engineDir = EngineProcess::DiscoverEngineDirW();
+                if (!engineDir.empty()) {
+                    std::wstring logPath = engineDir + L"\\logs\\dictation.log";
+                    ShellExecuteW(NULL, L"open", logPath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                }
             }
             if (ImGui::MenuItem("Clear Log")) {
                 m_engine.ClearLogs();
@@ -102,6 +122,32 @@ void DictationApp::Render()
                     ImGui::SetTooltip("Click, then press any keyboard key to set as the new hotkey");
             }
 
+            // Media Hotkey (YouTube play/pause)
+            if (m_capturingMediaHotkey) {
+                ImGui::MenuItem("Press any key...", nullptr, false, false);
+            } else {
+                if (status.media_hotkey.empty()) {
+                    if (ImGui::MenuItem("Set Media Hotkey")) {
+                        m_capturingMediaHotkey = true;
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Assign a key or mouse button to toggle media play/pause (e.g. YouTube)");
+                } else {
+                    std::string mhkUpper = status.media_hotkey;
+                    for (auto& c : mhkUpper) c = (char)toupper((unsigned char)c);
+                    char mhkLabel[64];
+                    snprintf(mhkLabel, sizeof(mhkLabel), "Media Hotkey [%s]", mhkUpper.c_str());
+                    if (ImGui::MenuItem(mhkLabel)) {
+                        m_capturingMediaHotkey = true;
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Click to change, or use Clear below to disable");
+                    if (ImGui::MenuItem("Clear Media Hotkey")) {
+                        m_engine.SetMediaHotkey("");
+                    }
+                }
+            }
+
             ImGui::Separator();
 
             // Microphone submenu
@@ -117,7 +163,8 @@ void DictationApp::Render()
                     bool selected = (dev.index == status.mic_device_index);
                     if (ImGui::MenuItem(devLabel, nullptr, selected)) {
                         if (dev.index != status.mic_device_index) {
-                            m_engine.SetMicDevice(dev.index);
+                            // Off-thread: opening the new device takes seconds
+                            std::thread([this, idx = dev.index] { m_engine.SetMicDevice(idx); }).detach();
                         }
                     }
                     ImGui::PopID();
@@ -185,6 +232,29 @@ void DictationApp::Render()
             ImGui::EndMenu();
         }
 
+        // Right-aligned engine status (dot + version)
+        {
+            char engBuf[64];
+            if (!status.connected)
+                snprintf(engBuf, sizeof(engBuf), "Engine offline");
+            else if (status.model_loading)
+                snprintf(engBuf, sizeof(engBuf), "Engine v%s  loading model...", status.version.c_str());
+            else
+                snprintf(engBuf, sizeof(engBuf), "Engine v%s", status.version.c_str());
+            float w = ImGui::CalcTextSize(engBuf).x + 26.0f;
+            ImGui::SetCursorPosX(ImGui::GetWindowWidth() - w);
+            ImVec4 dotCol = !status.connected      ? ImVec4(0.90f, 0.25f, 0.25f, 1.0f)
+                          : status.model_loading   ? ImVec4(0.90f, 0.70f, 0.10f, 1.0f)
+                          :                          ImVec4(0.20f, 0.85f, 0.30f, 1.0f);
+            ImVec2 cp = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddCircleFilled(
+                ImVec2(cp.x + 5.0f, cp.y + ImGui::GetTextLineHeight() * 0.55f),
+                4.0f, ImGui::ColorConvertFloat4ToU32(dotCol));
+            ImGui::Dummy(ImVec2(12, 0));
+            ImGui::SameLine(0, 2);
+            ImGui::TextDisabled("%s", engBuf);
+        }
+
         ImGui::EndMenuBar();
     }
 
@@ -222,26 +292,45 @@ void DictationApp::Render()
         }
     }
 
-    // --- Connection status ---
-    if (status.connected) {
-        if (status.model_loading) {
-            ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.1f, 1.0f), "ENGINE: LOADING MODEL...");
-            ImGui::SameLine();
-            ImGui::TextDisabled("v%s  |  uptime %.0fs", status.version.c_str(), status.uptime_s);
-        } else {
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "ENGINE: CONNECTED");
-            ImGui::SameLine();
-            ImGui::TextDisabled("v%s  |  uptime %.0fs", status.version.c_str(), status.uptime_s);
+    // Handle media hotkey capture (same pattern as dictation hotkey)
+    if (m_capturingMediaHotkey) {
+        ImGui::TextColored(ImVec4(0.1f, 0.8f, 1.0f, 1.0f),
+                           ">> Press any key or mouse button for media hotkey <<");
+        for (int key = ImGuiKey_NamedKey_BEGIN; key < ImGuiKey_MouseLeft; key++) {
+            if (ImGui::IsKeyPressed((ImGuiKey)key)) {
+                const char* name = ImGui::GetKeyName((ImGuiKey)key);
+                if (name && name[0] != '\0') {
+                    std::string keyLower = name;
+                    for (auto& c : keyLower) c = (char)tolower((unsigned char)c);
+                    m_engine.SetMediaHotkey(keyLower);
+                    m_capturingMediaHotkey = false;
+                }
+                break;
+            }
         }
-    } else {
+        if (m_capturingMediaHotkey) {
+            struct { ImGuiKey key; const char* name; } mouseButtons[] = {
+                { ImGuiKey_MouseMiddle, "mouse_middle" },
+                { ImGuiKey_MouseX1, "mouse_x1" },
+                { ImGuiKey_MouseX2, "mouse_x2" },
+            };
+            for (auto& mb : mouseButtons) {
+                if (ImGui::IsKeyPressed(mb.key)) {
+                    m_engine.SetMediaHotkey(mb.name);
+                    m_capturingMediaHotkey = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    // --- Disconnected screen (connected status lives in the menu bar) ---
+    if (!status.connected) {
         ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "ENGINE: DISCONNECTED");
         ImGui::SameLine();
         ImGui::TextDisabled("Waiting for engine on 127.0.0.1:8899...");
-    }
+        ImGui::Separator();
 
-    ImGui::Separator();
-
-    if (!status.connected) {
         auto procState = m_process.GetState();
         switch (procState) {
         case EngineProcess::State::LAUNCHING:
@@ -307,164 +396,276 @@ void DictationApp::Render()
         ImGui::PopFont();
     }
 
-    // --- State + Profile ---
-    ImGui::Text("State:");
-    ImGui::SameLine();
+    // --- Mode pills + Profile / Mic selectors ---
+    {
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("Mode:");
+        for (const auto& mode : status.mode_names) {
+            ImGui::SameLine(0, 6);
+            bool active = (mode == status.current_mode);
+            std::string label = mode;
+            if (!label.empty()) label[0] = (char)toupper((unsigned char)label[0]);
+            if (active) {
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.45f, 0.80f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.55f, 0.90f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.35f, 0.70f, 1.0f));
+            } else {
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.22f, 0.22f, 0.22f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.32f, 0.32f, 0.32f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.18f, 0.18f, 0.18f, 1.0f));
+            }
+            if (ImGui::Button(label.c_str(), ImVec2(0, 24)) && !active)
+                m_engine.SetMode(mode);
+            ImGui::PopStyleColor(3);
+            if (ImGui::IsItemHovered()) {
+                if (mode == "raw")           ImGui::SetTooltip("Type exactly what Whisper hears (no LLM needed)");
+                else if (mode == "clean")    ImGui::SetTooltip("Remove filler words, fix punctuation (needs local LLM)");
+                else if (mode == "prompt")   ImGui::SetTooltip("Restructure speech into LLM-ready prompts (needs local LLM)");
+                else if (mode == "dev")      ImGui::SetTooltip("Turn speech into tasks and bullet lists (needs local LLM)");
+                else if (mode == "detailed") ImGui::SetTooltip("Expand speech into detailed paragraphs (needs local LLM)");
+            }
+        }
 
-    ImVec4 targetColor = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);  // idle: muted gray
-    if (status.phase == "listening")              targetColor = ImVec4(0.3f, 0.5f, 1.0f, 1.0f);   // blue
-    else if (status.phase == "recording")         targetColor = ImVec4(1.0f, 0.6f, 0.1f, 1.0f);   // orange
-    else if (status.phase == "transcribing")      targetColor = ImVec4(0.7f, 0.4f, 1.0f, 1.0f);   // purple
-    else if (status.phase == "cleaning")          targetColor = ImVec4(0.2f, 0.9f, 0.9f, 1.0f);   // cyan
-    else if (status.phase == "typing")            targetColor = ImVec4(0.2f, 0.9f, 0.3f, 1.0f);   // green
-    else if (status.phase == "pending_approval")  targetColor = ImVec4(1.0f, 0.8f, 0.1f, 1.0f);   // yellow
-    else if (status.phase == "error")             targetColor = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);   // red
-
-    // Smooth color transition (150ms half-life)
-    float fadeAlpha = 1.0f - powf(0.5f, dt / 0.15f);
-    m_stateColor[0] += fadeAlpha * (targetColor.x - m_stateColor[0]);
-    m_stateColor[1] += fadeAlpha * (targetColor.y - m_stateColor[1]);
-    m_stateColor[2] += fadeAlpha * (targetColor.z - m_stateColor[2]);
-
-    ImGui::TextColored(ImVec4(m_stateColor[0], m_stateColor[1], m_stateColor[2], 1.0f),
-                       "%s", status.phase.c_str());
-
-    ImGui::Text("Profile: %s  |  Mode: %s",
-                status.current_profile.c_str(),
-                status.current_mode.c_str());
+        // Colored engine-phase indicator, right-aligned on the pills row
+        ImVec4 targetColor = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);  // idle: muted gray
+        if (status.phase == "listening")              targetColor = ImVec4(0.3f, 0.5f, 1.0f, 1.0f);
+        else if (status.phase == "recording")         targetColor = ImVec4(1.0f, 0.6f, 0.1f, 1.0f);
+        else if (status.phase == "transcribing")      targetColor = ImVec4(0.7f, 0.4f, 1.0f, 1.0f);
+        else if (status.phase == "cleaning")          targetColor = ImVec4(0.2f, 0.9f, 0.9f, 1.0f);
+        else if (status.phase == "typing")            targetColor = ImVec4(0.2f, 0.9f, 0.3f, 1.0f);
+        else if (status.phase == "pending_approval")  targetColor = ImVec4(1.0f, 0.8f, 0.1f, 1.0f);
+        else if (status.phase == "error")             targetColor = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
+        float fadeAlpha = 1.0f - powf(0.5f, dt / 0.15f);
+        m_stateColor[0] += fadeAlpha * (targetColor.x - m_stateColor[0]);
+        m_stateColor[1] += fadeAlpha * (targetColor.y - m_stateColor[1]);
+        m_stateColor[2] += fadeAlpha * (targetColor.z - m_stateColor[2]);
+        std::string phaseUpper = status.phase;
+        for (auto& c : phaseUpper) c = (char)toupper((unsigned char)c);
+        float pw = ImGui::CalcTextSize(phaseUpper.c_str()).x + 14.0f;
+        ImGui::SameLine(ImGui::GetWindowWidth() - pw);
+        ImGui::TextColored(ImVec4(m_stateColor[0], m_stateColor[1], m_stateColor[2], 1.0f),
+                           "%s", phaseUpper.c_str());
+    }
+    {
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("Profile:");
+        ImGui::SameLine(0, 6);
+        ImGui::SetNextItemWidth(160);
+        if (ImGui::BeginCombo("##ProfileSel", status.current_profile.c_str())) {
+            for (const auto& profile : status.profile_names) {
+                bool selected = (profile == status.current_profile);
+                if (ImGui::Selectable(profile.c_str(), selected) && !selected)
+                    m_engine.SetProfile(profile);
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine(0, 16);
+        ImGui::Text("Mic:");
+        ImGui::SameLine(0, 6);
+        ImGui::SetNextItemWidth(-1);
+        const char* micPreview = status.mic_device_name.empty()
+            ? "Default input" : status.mic_device_name.c_str();
+        if (ImGui::BeginCombo("##MicSel", micPreview)) {
+            for (const auto& dev : status.input_devices) {
+                ImGui::PushID(dev.index);
+                char devLabel[300];
+                if (dev.is_default)
+                    snprintf(devLabel, sizeof(devLabel), "%s (Default)", dev.name.c_str());
+                else
+                    snprintf(devLabel, sizeof(devLabel), "%s", dev.name.c_str());
+                bool selected = (dev.index == status.mic_device_index);
+                if (ImGui::Selectable(devLabel, selected) && dev.index != status.mic_device_index) {
+                    // Off-thread: opening the new device takes seconds
+                    std::thread([this, idx = dev.index] { m_engine.SetMicDevice(idx); }).detach();
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+    }
 
     // --- Feature toggles ---
     ImGui::Separator();
     {
-        // Approval Mode toggle button
-        if (status.approval_mode) {
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.55f, 0.15f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.65f, 0.20f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.45f, 0.10f, 1.0f));
-        } else {
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+        bool approvalOn = status.approval_mode;
+        if (ImGui::Checkbox("Approval", &approvalOn)) {
+            m_engine.SetApprovalMode(approvalOn);
         }
-        if (ImGui::Button(status.approval_mode ? "Approval: ON" : "Approval: OFF", ImVec2(140, 25))) {
-            m_engine.SetApprovalMode(!status.approval_mode);
-        }
-        ImGui::PopStyleColor(3);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Review text before typing into active window");
 
-        ImGui::SameLine(0, 12);
+        ImGui::SameLine(0, 16);
 
-        // Push-to-Talk toggle button
-        if (status.push_to_talk) {
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.35f, 0.65f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.45f, 0.75f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.25f, 0.55f, 1.0f));
-        } else {
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+        bool pttOn = status.push_to_talk;
+        if (ImGui::Checkbox("Push-to-Talk", &pttOn)) {
+            m_engine.SetPushToTalk(pttOn);
         }
-        if (ImGui::Button(status.push_to_talk ? "Push-to-Talk: ON" : "Push-to-Talk: OFF", ImVec2(160, 25))) {
-            m_engine.SetPushToTalk(!status.push_to_talk);
-        }
-        ImGui::PopStyleColor(3);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Hold hotkey to record, release to stop");
 
-        // --- Record / Audio to Text / Folder (right side of same row) ---
-        ImGui::SameLine(ImGui::GetWindowWidth() - 310);
+        ImGui::SameLine(0, 16);
 
-        // Record button
-        bool wavActive = status.wav_recording.active;
-        if (wavActive) {
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.65f, 0.08f, 0.08f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.4f, 0.05f, 0.05f, 1.0f));
+        // Hotkey button (promoted from Edit menu)
+        {
+            char hkLabel[64];
+            if (m_capturingHotkey) {
+                snprintf(hkLabel, sizeof(hkLabel), "Press a key...");
+            } else {
+                std::string hkUpper = status.hotkey;
+                for (auto& c : hkUpper) c = (char)toupper((unsigned char)c);
+                snprintf(hkLabel, sizeof(hkLabel), "Hotkey [%s]", hkUpper.c_str());
+            }
+            if (ImGui::Button(hkLabel, ImVec2(120, 25)) && !m_capturingHotkey) {
+                m_capturingHotkey = true;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Click, then press any key or mouse side button\nto change the dictation hotkey");
+        }
+
+        ImGui::SameLine(0, 8);
+
+        // Media Play/Pause button
+        if (m_capturingMediaHotkey) {
+            // Capturing mode — pulsing button
+            float pulse = 0.5f + 0.3f * (float)sin(ImGui::GetTime() * 4.0);
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.1f, pulse * 0.6f, pulse, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.1f, pulse * 0.6f, pulse, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.1f, pulse * 0.6f, pulse, 1.0f));
+            ImGui::Button("Press a key...", ImVec2(140, 25));
+            ImGui::PopStyleColor(3);
+        } else if (!status.media_hotkey.empty()) {
+            // Hotkey assigned — show key + right-click to clear
+            std::string mhkUpper = status.media_hotkey;
+            for (auto& c : mhkUpper) c = (char)toupper((unsigned char)c);
+            char mhkLabel[64];
+            snprintf(mhkLabel, sizeof(mhkLabel), "Media [%s]", mhkUpper.c_str());
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f, 0.25f, 0.60f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.65f, 0.35f, 0.70f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.45f, 0.15f, 0.50f, 1.0f));
+            if (ImGui::Button(mhkLabel, ImVec2(140, 25))) {
+                m_capturingMediaHotkey = true;
+            }
+            ImGui::PopStyleColor(3);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Click to change media hotkey\nRight-click to clear");
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                m_engine.SetMediaHotkey("");
+            }
         } else {
+            // No hotkey — offer to set one
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
-        }
-        if (ImGui::Button(wavActive ? "Stop Rec" : "Record", ImVec2(80, 25))) {
-            if (wavActive) {
-                m_engine.StopWavRecording();
-            } else {
-                const char* sources[] = { "post", "pre" };
-                m_engine.StartWavRecording(sources[m_recordSourceIdx]);
+            if (ImGui::Button("Set Media Key", ImVec2(140, 25))) {
+                m_capturingMediaHotkey = true;
             }
-        }
-        ImGui::PopStyleColor(3);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(wavActive ? "Stop WAV recording" : "Record mic audio to WAV file");
-
-        ImGui::SameLine(0, 6);
-
-        // Audio to Text button
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.35f, 0.55f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.45f, 0.65f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.25f, 0.45f, 1.0f));
-        bool a2tDisabled = status.file_transcription.active || status.model_loading;
-        if (a2tDisabled) ImGui::BeginDisabled();
-        if (ImGui::Button("Audio to Text", ImVec2(120, 25))) {
-            wchar_t szFile[MAX_PATH] = {};
-            OPENFILENAMEW ofn = {};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.lpstrFilter = L"Audio Files\0*.wav;*.mp3;*.flac;*.m4a;*.ogg\0All Files\0*.*\0";
-            ofn.lpstrFile = szFile;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-            std::wstring initDir;
-            if (!status.recordings_dir.empty()) {
-                initDir.assign(status.recordings_dir.begin(), status.recordings_dir.end());
-                ofn.lpstrInitialDir = initDir.c_str();
-            }
-            if (GetOpenFileNameW(&ofn)) {
-                int len = WideCharToMultiByte(CP_UTF8, 0, szFile, -1, nullptr, 0, nullptr, nullptr);
-                std::string path(len - 1, '\0');
-                WideCharToMultiByte(CP_UTF8, 0, szFile, -1, path.data(), len, nullptr, nullptr);
-                std::string a2tError;
-                bool ok = m_engine.TranscribeFile(path, a2tError);
-                m_showTranscriptionPopup = true;
-                m_lastTranscriptStatus.clear();
-                if (!ok) {
-                    m_lastTranscriptStatus = "Error: " + a2tError;
-                }
-            }
-        }
-        if (a2tDisabled) ImGui::EndDisabled();
-        ImGui::PopStyleColor(3);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-            if (status.model_loading)
-                ImGui::SetTooltip("Wait for Whisper model to load");
-            else if (status.file_transcription.active)
-                ImGui::SetTooltip("Transcription in progress...");
-            else
-                ImGui::SetTooltip("Transcribe an audio file to text (WAV, MP3, FLAC)");
+            ImGui::PopStyleColor(3);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Assign a key to toggle YouTube/media play/pause\nWorks without losing focus on your current window");
         }
 
-        ImGui::SameLine(0, 6);
-
-        // Folder button
-        if (ImGui::Button("Folder", ImVec2(55, 25))) {
-            std::string dir = status.recordings_dir;
-            if (!dir.empty()) {
-                CreateDirectoryA(dir.c_str(), NULL);
-                ShellExecuteA(NULL, "open", dir.c_str(), NULL, NULL, SW_SHOWNORMAL);
-            }
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Open recordings folder");
-
-        // Timer inline when WAV recording is active
-        if (wavActive) {
-            ImGui::SameLine(0, 8);
-            int secs = (int)status.wav_recording.seconds;
-            char timer[16];
-            snprintf(timer, sizeof(timer), "%02d:%02d", secs / 60, secs % 60);
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", timer);
-        }
     }
+
+    ImGui::Separator();
+
+    // --- Pending approval panel ---
+    if (status.phase == "pending_approval" && !status.pending_text.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.1f, 1.0f), "PENDING APPROVAL:");
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::TextWrapped("%s", status.pending_text.c_str());
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+
+        // Approve (green)
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.6f, 0.1f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.7f, 0.2f, 1.0f));
+        if (ImGui::Button("Approve", ImVec2(100, 30))) {
+            m_engine.ApprovePending();
+            m_editActive = false;
+        }
+        ImGui::PopStyleColor(2);
+
+        ImGui::SameLine();
+
+        // Edit (blue)
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.3f, 0.7f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.4f, 0.8f, 1.0f));
+        if (ImGui::Button("Edit", ImVec2(100, 30))) {
+            strncpy(m_editBuffer, status.pending_text.c_str(), sizeof(m_editBuffer) - 1);
+            m_editBuffer[sizeof(m_editBuffer) - 1] = '\0';
+            m_editActive = true;
+        }
+        ImGui::PopStyleColor(2);
+
+        ImGui::SameLine();
+
+        // Reject (red)
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+        if (ImGui::Button("Reject", ImVec2(100, 30))) {
+            m_engine.RejectPending();
+            m_editActive = false;
+        }
+        ImGui::PopStyleColor(2);
+
+        // Edit text box
+        if (m_editActive) {
+            ImGui::Spacing();
+            ImGui::Text("Edit text:");
+            ImGui::InputTextMultiline("##EditPending", m_editBuffer, sizeof(m_editBuffer),
+                                       ImVec2(-1, 80));
+            if (ImGui::Button("Send Edited", ImVec2(120, 25))) {
+                m_engine.EditPending(std::string(m_editBuffer));
+                m_editActive = false;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(80, 25))) {
+                m_editActive = false;
+            }
+        }
+
+        ImGui::Separator();
+    } else {
+        m_editActive = false;
+    }
+
+    // --- Last transcript ---
+    ImGui::TextDisabled("Heard:");
+    ImGui::Indent(8);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+    ImGui::TextWrapped("%s", status.last_raw_transcript.empty()
+                       ? "(waiting for speech...)" : status.last_raw_transcript.c_str());
+    ImGui::PopStyleColor();
+    ImGui::Unindent(8);
+
+    ImGui::Separator();
+
+    ImGui::Text("Typed:");
+    ImGui::Indent(8);
+    // Detect new output and trigger flash
+    if (status.last_cleaned_text != m_lastOutputText && !status.last_cleaned_text.empty()) {
+        m_lastOutputText = status.last_cleaned_text;
+        m_outputFlashTime = ImGui::GetTime();
+    }
+    // Flash: bright white-green → normal green over 300ms
+    float flashAge = (float)(ImGui::GetTime() - m_outputFlashTime);
+    float flashAlpha = fmaxf(0.0f, 1.0f - flashAge / 0.3f);
+    ImVec4 outputColor = ImVec4(0.4f + 0.6f * flashAlpha, 1.0f, 0.4f + 0.6f * flashAlpha, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, outputColor);
+    ImGui::TextWrapped("%s", status.last_cleaned_text.empty()
+                       ? "(waiting for speech...)" : status.last_cleaned_text.c_str());
+    ImGui::PopStyleColor();
+    ImGui::Unindent(8);
+
+    // --- Error ---
+    if (!status.last_error.empty()) {
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                           "Error: %s", status.last_error.c_str());
+    }
+
 
     // --- Transcription Progress Popup ---
     // Auto-open when transcription starts (e.g. via API)
@@ -482,9 +683,15 @@ void DictationApp::Render()
                                ImGuiWindowFlags_NoMove)) {
         auto& ft = status.file_transcription;
 
-        // Throttled log fetch (~1s interval while popup is open)
-        if (now - m_lastLogFetchTime > 1.0) {
-            m_transcriptLogLines = m_engine.FetchLogTail(30);
+        // Throttled log fetch (~1s interval while popup is open) — async so a
+        // slow engine response can't stall the render loop
+        if (m_logTailFuture.valid() &&
+            m_logTailFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            m_transcriptLogLines = m_logTailFuture.get();
+        }
+        if (now - m_lastLogFetchTime > 1.0 && !m_logTailFuture.valid()) {
+            m_logTailFuture = std::async(std::launch::async,
+                [this] { return m_engine.FetchLogTail(30); });
             m_lastLogFetchTime = now;
         }
 
@@ -576,8 +783,8 @@ void DictationApp::Render()
                 ImGui::Spacing();
 
                 if (ImGui::Button("Open Folder", ImVec2(120, 0))) {
-                    std::string cmd = "/select,\"" + ft.output_path + "\"";
-                    ShellExecuteA(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWNORMAL);
+                    std::wstring cmd = L"/select,\"" + Utf8ToWide(ft.output_path) + L"\"";
+                    ShellExecuteW(NULL, L"open", L"explorer.exe", cmd.c_str(), NULL, SW_SHOWNORMAL);
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Save Another", ImVec2(120, 0))) {
@@ -645,6 +852,14 @@ void DictationApp::Render()
     if (ImGui::BeginPopupModal("Microphone Calibration", nullptr, ImGuiWindowFlags_NoMove)) {
         float elapsed = (float)(now - m_calStartTime);
 
+        // Pick up the LLM-generated reading prompt when the async fetch lands
+        if (m_calPromptFuture.valid() &&
+            m_calPromptFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            std::string fetched = m_calPromptFuture.get();
+            if (!fetched.empty())
+                m_calPrompt = fetched;
+        }
+
         if (m_calPhase == 0) {
             // Phase 0: Silence measurement
             ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Step 1 of 2: Measuring Room Noise");
@@ -661,7 +876,9 @@ void DictationApp::Render()
             // Auto-transition to speech phase
             if (elapsed >= silenceDuration + 0.3f) {
                 if (m_engine.FinishSilenceCalibration()) {
-                    m_calNoiseFloor = status.gate.calibrated_noise_floor_dbfs;
+                    // 'status' was snapshotted before the finish call — re-fetch
+                    // so we show this run's measurement, not the previous one's
+                    m_calNoiseFloor = m_engine.GetStatus().gate.calibrated_noise_floor_dbfs;
                     m_engine.StartSpeechCalibration();
                     m_calStartTime = now;
                     m_calPhase = 1;
@@ -697,10 +914,12 @@ void DictationApp::Render()
             // Auto-finish
             if (elapsed >= speechDuration + 0.3f) {
                 if (m_engine.FinishCalibration()) {
-                    m_calNoiseFloor = status.gate.calibrated_noise_floor_dbfs;
-                    m_calSpeechLevel = status.gate.calibrated_speech_dbfs;
-                    m_calOpenThresh = status.gate.open_threshold_dbfs;
-                    m_calCloseThresh = status.gate.close_threshold_dbfs;
+                    // Re-fetch: the frame's 'status' snapshot predates the finish
+                    EngineStatus fresh = m_engine.GetStatus();
+                    m_calNoiseFloor = fresh.gate.calibrated_noise_floor_dbfs;
+                    m_calSpeechLevel = fresh.gate.calibrated_speech_dbfs;
+                    m_calOpenThresh = fresh.gate.open_threshold_dbfs;
+                    m_calCloseThresh = fresh.gate.close_threshold_dbfs;
                     m_calPhase = 2;
                 } else {
                     m_calPhase = -1;
@@ -708,24 +927,26 @@ void DictationApp::Render()
                 }
             }
         } else if (m_calPhase == 2) {
-            // Phase 2: Results
+            // Phase 2: Results — render live from the engine's status so the
+            // numbers reflect THIS calibration run (the cached m_cal* values
+            // can predate the poll thread picking up the new state)
             ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Calibration Complete!");
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
             ImGui::Text("Noise Floor:");
             ImGui::SameLine(180);
-            ImGui::Text("%.1f dBFS", m_calNoiseFloor);
+            ImGui::Text("%.1f dBFS", status.gate.calibrated_noise_floor_dbfs);
             ImGui::Text("Speech Level:");
             ImGui::SameLine(180);
-            ImGui::Text("%.1f dBFS", m_calSpeechLevel);
+            ImGui::Text("%.1f dBFS", status.gate.calibrated_speech_dbfs);
             ImGui::Spacing();
             ImGui::Text("Open Threshold:");
             ImGui::SameLine(180);
-            ImGui::Text("%.1f dBFS", m_calOpenThresh);
+            ImGui::Text("%.1f dBFS", status.gate.open_threshold_dbfs);
             ImGui::Text("Close Threshold:");
             ImGui::SameLine(180);
-            ImGui::Text("%.1f dBFS", m_calCloseThresh);
+            ImGui::Text("%.1f dBFS", status.gate.close_threshold_dbfs);
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
@@ -744,7 +965,9 @@ void DictationApp::Render()
             if (ImGui::Button("Retry", ImVec2(100, 0))) {
                 m_calPhase = 0;
                 m_calError.clear();
-                m_calPrompt = m_engine.FetchCalibrationPrompt();
+                m_calPrompt = kCalFallbackPrompt;
+                m_calPromptFuture = std::async(std::launch::async,
+                    [this] { return m_engine.FetchCalibrationPrompt(); });
                 m_engine.StartCalibration();
                 m_calStartTime = now;
             }
@@ -758,9 +981,9 @@ void DictationApp::Render()
         ImGui::EndPopup();
     }
 
-    // --- Processing (DSP) ---
+    // Meter smoothing — feeds the VU meter and DSP meters. Must run every
+    // frame even while the Audio Processing section is collapsed.
     if (status.has_dsp) {
-        ImGui::Separator();
         float meterAlpha = 1.0f - powf(0.5f, dt / 0.05f);
 
         // Smooth meters
@@ -773,205 +996,6 @@ void DictationApp::Render()
             m_vuPeakDbfs = m_smoothInputDbfs;
         else
             m_vuPeakDbfs += (1.0f - powf(0.5f, dt / 1.5f)) * (m_smoothInputDbfs - m_vuPeakDbfs);
-
-        // === Noise Gate ===
-        {
-            // Header line: toggle + status
-            bool gateEnabled = status.gate.enabled;
-            if (gateEnabled) {
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.55f, 0.15f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.65f, 0.20f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.45f, 0.10f, 1.0f));
-            } else {
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
-            }
-            if (ImGui::Button(gateEnabled ? "Gate: ON" : "Gate: OFF", ImVec2(100, 22))) {
-                nlohmann::json body = {{"dsp", {{"noise_gate", {{"enabled", !gateEnabled}}}}}};
-                m_engine.PostDSPConfig(body.dump());
-            }
-            ImGui::PopStyleColor(3);
-
-            ImGui::SameLine();
-            ImGui::Text("Input: %.1f dBFS", m_smoothInputDbfs);
-            ImGui::SameLine();
-            if (status.gate.gate_open) {
-                ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.3f, 1.0f), "OPEN");
-            } else {
-                ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "CLOSED (%.0f dB)", -status.gate.attenuation_db);
-            }
-
-            if (gateEnabled) {
-                // Input level bar with threshold markers
-                {
-                    ImVec2 barPos = ImGui::GetCursorScreenPos();
-                    float barWidth = ImGui::GetContentRegionAvail().x;
-                    float barHeight = 14.0f;
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-
-                    dl->AddRectFilled(barPos, ImVec2(barPos.x + barWidth, barPos.y + barHeight),
-                                      IM_COL32(30, 30, 30, 255));
-
-                    // Level fill (-80..0 dBFS mapped to 0..1)
-                    float levelT = (m_smoothInputDbfs - (-80.0f)) / (0.0f - (-80.0f));
-                    levelT = fmaxf(0.0f, fminf(1.0f, levelT));
-                    ImU32 levelCol = status.gate.gate_open ? IM_COL32(40, 200, 60, 200) : IM_COL32(200, 60, 40, 200);
-                    dl->AddRectFilled(barPos, ImVec2(barPos.x + levelT * barWidth, barPos.y + barHeight), levelCol);
-
-                    // Open threshold marker (bright yellow)
-                    float openT = (status.gate.open_threshold_dbfs - (-80.0f)) / 80.0f;
-                    openT = fmaxf(0.0f, fminf(1.0f, openT));
-                    float openX = barPos.x + openT * barWidth;
-                    dl->AddLine(ImVec2(openX, barPos.y), ImVec2(openX, barPos.y + barHeight),
-                                IM_COL32(255, 220, 50, 220), 2.0f);
-
-                    // Close threshold marker (dim yellow)
-                    float closeT = (status.gate.close_threshold_dbfs - (-80.0f)) / 80.0f;
-                    closeT = fmaxf(0.0f, fminf(1.0f, closeT));
-                    float closeX = barPos.x + closeT * barWidth;
-                    dl->AddLine(ImVec2(closeX, barPos.y), ImVec2(closeX, barPos.y + barHeight),
-                                IM_COL32(255, 220, 50, 100), 2.0f);
-
-                    ImGui::Dummy(ImVec2(barWidth, barHeight));
-                }
-
-                // Sliders (locked by default to prevent accidental changes)
-                if (ImGui::SmallButton(m_dspLocked ? "Unlock Sliders" : "Lock Sliders")) {
-                    m_dspLocked = !m_dspLocked;
-                }
-
-                if (m_dspLocked) ImGui::BeginDisabled();
-                ImGui::PushItemWidth(-140);
-
-                float openTh = status.gate.open_threshold_dbfs;
-                float closeTh = status.gate.close_threshold_dbfs;
-                float floorDb = status.gate.floor_db;
-
-                if (ImGui::SliderFloat("Open Threshold##gate", &openTh, -80.0f, 0.0f, "%.1f dBFS")) {
-                    // Enforce gap: push close down if needed
-                    if (openTh < closeTh + 3.0f) closeTh = openTh - 3.0f;
-                    nlohmann::json body = {{"dsp", {{"noise_gate", {
-                        {"open_threshold_dbfs", openTh},
-                        {"close_threshold_dbfs", closeTh}
-                    }}}}};
-                    m_engine.PostDSPConfig(body.dump());
-                }
-
-                if (ImGui::SliderFloat("Close Threshold##gate", &closeTh, -80.0f, 0.0f, "%.1f dBFS")) {
-                    // Enforce gap: push open up if needed
-                    if (closeTh > openTh - 3.0f) openTh = closeTh + 3.0f;
-                    nlohmann::json body = {{"dsp", {{"noise_gate", {
-                        {"open_threshold_dbfs", openTh},
-                        {"close_threshold_dbfs", closeTh}
-                    }}}}};
-                    m_engine.PostDSPConfig(body.dump());
-                }
-
-                if (ImGui::SliderFloat("Floor##gate", &floorDb, -80.0f, 0.0f, "%.1f dB")) {
-                    nlohmann::json body = {{"dsp", {{"noise_gate", {{"floor_db", floorDb}}}}}};
-                    m_engine.PostDSPConfig(body.dump());
-                }
-
-                ImGui::PopItemWidth();
-                if (m_dspLocked) ImGui::EndDisabled();
-
-                // Auto Calibrate button — opens guided popup
-                if (ImGui::Button("Auto Calibrate", ImVec2(140, 22))) {
-                    m_showCalPopup = true;
-                    m_calPhase = 0;
-                    m_calError.clear();
-                    m_calPrompt = m_engine.FetchCalibrationPrompt();
-                    m_engine.StartCalibration();
-                    m_calStartTime = ImGui::GetTime();
-                }
-                if (status.gate.calibrated_noise_floor_dbfs > -79.0f) {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("Noise floor: %.1f dBFS", status.gate.calibrated_noise_floor_dbfs);
-                }
-            }
-        }
-
-        ImGui::Spacing();
-
-        // === Compressor ===
-        {
-            bool compEnabled = status.compressor.enabled;
-            if (compEnabled) {
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.35f, 0.65f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.45f, 0.75f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.25f, 0.55f, 1.0f));
-            } else {
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
-            }
-            if (ImGui::Button(compEnabled ? "Comp: ON" : "Comp: OFF", ImVec2(100, 22))) {
-                nlohmann::json body = {{"dsp", {{"compressor", {{"enabled", !compEnabled}}}}}};
-                m_engine.PostDSPConfig(body.dump());
-            }
-            ImGui::PopStyleColor(3);
-
-            ImGui::SameLine();
-
-            // GR meter (always visible, even when OFF)
-            {
-                ImGui::Text("GR:");
-                ImGui::SameLine();
-                ImVec2 grPos = ImGui::GetCursorScreenPos();
-                float grWidth = 120.0f;
-                float grHeight = 14.0f;
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                dl->AddRectFilled(grPos, ImVec2(grPos.x + grWidth, grPos.y + grHeight),
-                                  IM_COL32(30, 30, 30, 255));
-                // GR fills right-to-left in orange
-                float grT = fminf(m_smoothGR / 20.0f, 1.0f);
-                if (grT > 0.001f) {
-                    dl->AddRectFilled(ImVec2(grPos.x + grWidth * (1.0f - grT), grPos.y),
-                                      ImVec2(grPos.x + grWidth, grPos.y + grHeight),
-                                      IM_COL32(220, 140, 30, 200));
-                }
-                ImGui::Dummy(ImVec2(grWidth, grHeight));
-                ImGui::SameLine();
-                ImGui::Text("%.1f dB", m_smoothGR);
-            }
-
-            if (compEnabled) {
-                if (m_dspLocked) ImGui::BeginDisabled();
-                ImGui::PushItemWidth(-140);
-
-                float compTh = status.compressor.threshold_dbfs;
-                float compRatio = status.compressor.ratio;
-                float compMakeup = status.compressor.makeup_gain_db;
-
-                if (ImGui::SliderFloat("Threshold##comp", &compTh, -60.0f, 0.0f, "%.1f dBFS")) {
-                    nlohmann::json body = {{"dsp", {{"compressor", {{"threshold_dbfs", compTh}}}}}};
-                    m_engine.PostDSPConfig(body.dump());
-                }
-                if (ImGui::SliderFloat("Ratio##comp", &compRatio, 1.0f, 20.0f, "%.1f:1")) {
-                    nlohmann::json body = {{"dsp", {{"compressor", {{"ratio", compRatio}}}}}};
-                    m_engine.PostDSPConfig(body.dump());
-                }
-                if (ImGui::SliderFloat("Makeup##comp", &compMakeup, 0.0f, 24.0f, "%.1f dB")) {
-                    nlohmann::json body = {{"dsp", {{"compressor", {{"makeup_gain_db", compMakeup}}}}}};
-                    m_engine.PostDSPConfig(body.dump());
-                }
-
-                ImGui::PopItemWidth();
-                if (m_dspLocked) ImGui::EndDisabled();
-            }
-        }
-
-        // Spectrum source toggle
-        ImGui::Spacing();
-        {
-            const char* items[] = { "Post DSP", "Pre DSP" };
-            int current = status.spectrum_pre_dsp ? 1 : 0;
-            ImGui::SetNextItemWidth(120);
-            if (ImGui::Combo("Spectrum##source", &current, items, 2)) {
-                m_engine.SetSpectrumSource(current == 1);
-            }
-        }
     }
 
     ImGui::Separator();
@@ -1248,97 +1272,378 @@ void DictationApp::Render()
 
     ImGui::Separator();
 
-    // --- Pending approval panel ---
-    if (status.phase == "pending_approval" && !status.pending_text.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.1f, 1.0f), "PENDING APPROVAL:");
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-        ImGui::TextWrapped("%s", status.pending_text.c_str());
-        ImGui::PopStyleColor();
+    // --- Audio Processing (set-once controls; collapsed by default) ---
+    if (ImGui::CollapsingHeader("Audio Processing")) {
+        if (status.has_dsp) {
+        // === Noise Gate ===
+        {
+            // Header line: toggle + status
+            bool gateEnabled = status.gate.enabled;
+            if (gateEnabled) {
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.55f, 0.15f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.65f, 0.20f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.45f, 0.10f, 1.0f));
+            } else {
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+            }
+            if (ImGui::Button(gateEnabled ? "Gate: ON" : "Gate: OFF", ImVec2(100, 22))) {
+                nlohmann::json body = {{"dsp", {{"noise_gate", {{"enabled", !gateEnabled}}}}}};
+                m_engine.PostDSPConfig(body.dump());
+            }
+            ImGui::PopStyleColor(3);
+
+            ImGui::SameLine();
+            ImGui::Text("Input: %.1f dBFS", m_smoothInputDbfs);
+            ImGui::SameLine();
+            if (status.gate.gate_open) {
+                ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.3f, 1.0f), "OPEN");
+            } else {
+                ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "CLOSED (%.0f dB)", -status.gate.attenuation_db);
+            }
+
+            if (gateEnabled) {
+                // Input level bar with threshold markers
+                {
+                    ImVec2 barPos = ImGui::GetCursorScreenPos();
+                    float barWidth = ImGui::GetContentRegionAvail().x;
+                    float barHeight = 14.0f;
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+                    dl->AddRectFilled(barPos, ImVec2(barPos.x + barWidth, barPos.y + barHeight),
+                                      IM_COL32(30, 30, 30, 255));
+
+                    // Level fill (-80..0 dBFS mapped to 0..1)
+                    float levelT = (m_smoothInputDbfs - (-80.0f)) / (0.0f - (-80.0f));
+                    levelT = fmaxf(0.0f, fminf(1.0f, levelT));
+                    ImU32 levelCol = status.gate.gate_open ? IM_COL32(40, 200, 60, 200) : IM_COL32(200, 60, 40, 200);
+                    dl->AddRectFilled(barPos, ImVec2(barPos.x + levelT * barWidth, barPos.y + barHeight), levelCol);
+
+                    // Open threshold marker (bright yellow)
+                    float openT = (status.gate.open_threshold_dbfs - (-80.0f)) / 80.0f;
+                    openT = fmaxf(0.0f, fminf(1.0f, openT));
+                    float openX = barPos.x + openT * barWidth;
+                    dl->AddLine(ImVec2(openX, barPos.y), ImVec2(openX, barPos.y + barHeight),
+                                IM_COL32(255, 220, 50, 220), 2.0f);
+
+                    // Close threshold marker (dim yellow)
+                    float closeT = (status.gate.close_threshold_dbfs - (-80.0f)) / 80.0f;
+                    closeT = fmaxf(0.0f, fminf(1.0f, closeT));
+                    float closeX = barPos.x + closeT * barWidth;
+                    dl->AddLine(ImVec2(closeX, barPos.y), ImVec2(closeX, barPos.y + barHeight),
+                                IM_COL32(255, 220, 50, 100), 2.0f);
+
+                    ImGui::Dummy(ImVec2(barWidth, barHeight));
+                }
+
+                // Sliders (locked by default to prevent accidental changes)
+                if (ImGui::SmallButton(m_dspLocked ? "Unlock Sliders" : "Lock Sliders")) {
+                    m_dspLocked = !m_dspLocked;
+                }
+
+                if (m_dspLocked) ImGui::BeginDisabled();
+                ImGui::PushItemWidth(-140);
+
+                float openTh = status.gate.open_threshold_dbfs;
+                float closeTh = status.gate.close_threshold_dbfs;
+                float floorDb = status.gate.floor_db;
+
+                if (ImGui::SliderFloat("Open Threshold##gate", &openTh, -80.0f, 0.0f, "%.1f dBFS")) {
+                    // Enforce gap: push close down if needed
+                    if (openTh < closeTh + 3.0f) closeTh = openTh - 3.0f;
+                    nlohmann::json body = {{"dsp", {{"noise_gate", {
+                        {"open_threshold_dbfs", openTh},
+                        {"close_threshold_dbfs", closeTh}
+                    }}}}};
+                    m_engine.PostDSPConfig(body.dump());
+                }
+
+                if (ImGui::SliderFloat("Close Threshold##gate", &closeTh, -80.0f, 0.0f, "%.1f dBFS")) {
+                    // Enforce gap: push open up if needed
+                    if (closeTh > openTh - 3.0f) openTh = closeTh + 3.0f;
+                    nlohmann::json body = {{"dsp", {{"noise_gate", {
+                        {"open_threshold_dbfs", openTh},
+                        {"close_threshold_dbfs", closeTh}
+                    }}}}};
+                    m_engine.PostDSPConfig(body.dump());
+                }
+
+                if (ImGui::SliderFloat("Floor##gate", &floorDb, -80.0f, 0.0f, "%.1f dB")) {
+                    nlohmann::json body = {{"dsp", {{"noise_gate", {{"floor_db", floorDb}}}}}};
+                    m_engine.PostDSPConfig(body.dump());
+                }
+
+                ImGui::PopItemWidth();
+                if (m_dspLocked) ImGui::EndDisabled();
+
+                // Auto Calibrate button — opens guided popup. The LLM-generated
+                // reading prompt can take seconds; fetch it off-thread and show
+                // the fallback sentence until it arrives.
+                if (ImGui::Button("Auto Calibrate", ImVec2(140, 22))) {
+                    m_showCalPopup = true;
+                    m_calPhase = 0;
+                    m_calError.clear();
+                    m_calPrompt = kCalFallbackPrompt;
+                    m_calPromptFuture = std::async(std::launch::async,
+                        [this] { return m_engine.FetchCalibrationPrompt(); });
+                    m_engine.StartCalibration();
+                    m_calStartTime = ImGui::GetTime();
+                }
+                if (status.gate.calibrated_noise_floor_dbfs > -79.0f) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("Noise floor: %.1f dBFS", status.gate.calibrated_noise_floor_dbfs);
+                }
+            }
+        }
+
         ImGui::Spacing();
 
-        // Approve (green)
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.6f, 0.1f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.7f, 0.2f, 1.0f));
-        if (ImGui::Button("Approve", ImVec2(100, 30))) {
-            m_engine.ApprovePending();
-            m_editActive = false;
-        }
-        ImGui::PopStyleColor(2);
-
-        ImGui::SameLine();
-
-        // Edit (blue)
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.3f, 0.7f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.4f, 0.8f, 1.0f));
-        if (ImGui::Button("Edit", ImVec2(100, 30))) {
-            strncpy(m_editBuffer, status.pending_text.c_str(), sizeof(m_editBuffer) - 1);
-            m_editBuffer[sizeof(m_editBuffer) - 1] = '\0';
-            m_editActive = true;
-        }
-        ImGui::PopStyleColor(2);
-
-        ImGui::SameLine();
-
-        // Reject (red)
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
-        if (ImGui::Button("Reject", ImVec2(100, 30))) {
-            m_engine.RejectPending();
-            m_editActive = false;
-        }
-        ImGui::PopStyleColor(2);
-
-        // Edit text box
-        if (m_editActive) {
-            ImGui::Spacing();
-            ImGui::Text("Edit text:");
-            ImGui::InputTextMultiline("##EditPending", m_editBuffer, sizeof(m_editBuffer),
-                                       ImVec2(-1, 80));
-            if (ImGui::Button("Send Edited", ImVec2(120, 25))) {
-                m_engine.EditPending(std::string(m_editBuffer));
-                m_editActive = false;
+        // === Compressor ===
+        {
+            bool compEnabled = status.compressor.enabled;
+            if (compEnabled) {
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.35f, 0.65f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.45f, 0.75f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.25f, 0.55f, 1.0f));
+            } else {
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
             }
+            if (ImGui::Button(compEnabled ? "Comp: ON" : "Comp: OFF", ImVec2(100, 22))) {
+                nlohmann::json body = {{"dsp", {{"compressor", {{"enabled", !compEnabled}}}}}};
+                m_engine.PostDSPConfig(body.dump());
+            }
+            ImGui::PopStyleColor(3);
+
             ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(80, 25))) {
-                m_editActive = false;
+
+            // GR meter (always visible, even when OFF)
+            {
+                ImGui::Text("GR:");
+                ImGui::SameLine();
+                ImVec2 grPos = ImGui::GetCursorScreenPos();
+                float grWidth = 120.0f;
+                float grHeight = 14.0f;
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                dl->AddRectFilled(grPos, ImVec2(grPos.x + grWidth, grPos.y + grHeight),
+                                  IM_COL32(30, 30, 30, 255));
+                // GR fills right-to-left in orange
+                float grT = fminf(m_smoothGR / 20.0f, 1.0f);
+                if (grT > 0.001f) {
+                    dl->AddRectFilled(ImVec2(grPos.x + grWidth * (1.0f - grT), grPos.y),
+                                      ImVec2(grPos.x + grWidth, grPos.y + grHeight),
+                                      IM_COL32(220, 140, 30, 200));
+                }
+                ImGui::Dummy(ImVec2(grWidth, grHeight));
+                ImGui::SameLine();
+                ImGui::Text("%.1f dB", m_smoothGR);
+            }
+
+            if (compEnabled) {
+                if (m_dspLocked) ImGui::BeginDisabled();
+                ImGui::PushItemWidth(-140);
+
+                float compTh = status.compressor.threshold_dbfs;
+                float compRatio = status.compressor.ratio;
+                float compMakeup = status.compressor.makeup_gain_db;
+
+                if (ImGui::SliderFloat("Threshold##comp", &compTh, -60.0f, 0.0f, "%.1f dBFS")) {
+                    nlohmann::json body = {{"dsp", {{"compressor", {{"threshold_dbfs", compTh}}}}}};
+                    m_engine.PostDSPConfig(body.dump());
+                }
+                if (ImGui::SliderFloat("Ratio##comp", &compRatio, 1.0f, 20.0f, "%.1f:1")) {
+                    nlohmann::json body = {{"dsp", {{"compressor", {{"ratio", compRatio}}}}}};
+                    m_engine.PostDSPConfig(body.dump());
+                }
+                if (ImGui::SliderFloat("Makeup##comp", &compMakeup, 0.0f, 24.0f, "%.1f dB")) {
+                    nlohmann::json body = {{"dsp", {{"compressor", {{"makeup_gain_db", compMakeup}}}}}};
+                    m_engine.PostDSPConfig(body.dump());
+                }
+
+                ImGui::PopItemWidth();
+                if (m_dspLocked) ImGui::EndDisabled();
             }
         }
 
-        ImGui::Separator();
+        // Spectrum source toggle
+        ImGui::Spacing();
+        {
+            const char* items[] = { "Post DSP", "Pre DSP" };
+            int current = status.spectrum_pre_dsp ? 1 : 0;
+            ImGui::SetNextItemWidth(120);
+            if (ImGui::Combo("Spectrum##source", &current, items, 2)) {
+                m_engine.SetSpectrumSource(current == 1);
+            }
+        }
+        } else {
+            ImGui::TextDisabled("DSP not available in this engine.");
+        }
+    }
+
+    // --- Recording & Files ---
+    // Header shows a live REC timer so an active recording is visible even
+    // while the section is collapsed ("###" keeps the ImGui ID stable).
+    char recHeaderLabel[64];
+    if (status.wav_recording.active) {
+        int recSecs = (int)status.wav_recording.seconds;
+        snprintf(recHeaderLabel, sizeof(recHeaderLabel),
+                 "Recording & Files  \xc2\xb7  REC %02d:%02d###RecFiles", recSecs / 60, recSecs % 60);
     } else {
-        m_editActive = false;
+        snprintf(recHeaderLabel, sizeof(recHeaderLabel), "Recording & Files###RecFiles");
+    }
+    if (ImGui::CollapsingHeader(recHeaderLabel)) {
+        // --- Record / Audio to Text / Folder ---
+
+        // Record button
+        bool wavActive = status.wav_recording.active;
+        if (wavActive) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.65f, 0.08f, 0.08f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.4f, 0.05f, 0.05f, 1.0f));
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+        }
+        if (ImGui::Button(wavActive ? "Stop Rec" : "Record", ImVec2(80, 25))) {
+            if (wavActive) {
+                m_engine.StopWavRecording();
+            } else {
+                const char* sources[] = { "post", "pre" };
+                m_engine.StartWavRecording(sources[m_recordSourceIdx]);
+            }
+        }
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(wavActive ? "Stop WAV recording" : "Record mic audio to WAV file");
+
+        ImGui::SameLine(0, 6);
+
+        // Audio to Text button
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.35f, 0.55f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.45f, 0.65f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.25f, 0.45f, 1.0f));
+        bool a2tDisabled = status.file_transcription.active || status.model_loading;
+        if (a2tDisabled) ImGui::BeginDisabled();
+        if (ImGui::Button("Audio to Text", ImVec2(120, 25))) {
+            wchar_t szFile[MAX_PATH] = {};
+            OPENFILENAMEW ofn = {};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.lpstrFilter = L"Audio Files\0*.wav;*.mp3;*.flac;*.m4a;*.ogg\0All Files\0*.*\0";
+            ofn.lpstrFile = szFile;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+            std::wstring initDir = Utf8ToWide(status.recordings_dir);
+            if (!initDir.empty()) {
+                ofn.lpstrInitialDir = initDir.c_str();
+            }
+            if (GetOpenFileNameW(&ofn)) {
+                int len = WideCharToMultiByte(CP_UTF8, 0, szFile, -1, nullptr, 0, nullptr, nullptr);
+                if (len <= 0) len = 1;  // conversion failure → empty path, not SIZE_MAX alloc
+                std::string path(len - 1, '\0');
+                WideCharToMultiByte(CP_UTF8, 0, szFile, -1, path.data(), len, nullptr, nullptr);
+                std::string a2tError;
+                bool ok = m_engine.TranscribeFile(path, a2tError);
+                m_showTranscriptionPopup = true;
+                m_lastTranscriptStatus.clear();
+                if (!ok) {
+                    m_lastTranscriptStatus = "Error: " + a2tError;
+                }
+            }
+        }
+        if (a2tDisabled) ImGui::EndDisabled();
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (status.model_loading)
+                ImGui::SetTooltip("Wait for Whisper model to load");
+            else if (status.file_transcription.active)
+                ImGui::SetTooltip("Transcription in progress...");
+            else
+                ImGui::SetTooltip("Transcribe an audio file to text (WAV, MP3, FLAC)");
+        }
+
+        ImGui::SameLine(0, 6);
+
+        // Folder button
+        if (ImGui::Button("Folder", ImVec2(55, 25))) {
+            std::wstring dir = Utf8ToWide(status.recordings_dir);
+            if (!dir.empty()) {
+                CreateDirectoryW(dir.c_str(), NULL);
+                ShellExecuteW(NULL, L"open", dir.c_str(), NULL, NULL, SW_SHOWNORMAL);
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Open recordings folder");
+
+        // Timer inline when WAV recording is active
+        if (wavActive) {
+            ImGui::SameLine(0, 8);
+            int secs = (int)status.wav_recording.seconds;
+            char timer[16];
+            snprintf(timer, sizeof(timer), "%02d:%02d", secs / 60, secs % 60);
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", timer);
+        }
+
+    // --- System audio (loopback) "conversation mode" ---
+    {
+        bool sysOn = status.system_audio_enabled;
+        if (sysOn) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.45f, 0.30f, 0.65f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.55f, 0.40f, 0.75f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.35f, 0.20f, 0.55f, 1.0f));
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+        }
+        if (ImGui::Button(sysOn ? "System Audio: ON" : "System Audio: OFF", ImVec2(170, 25))) {
+            // Off-thread: opening the loopback stream takes seconds
+            std::thread([this, on = !sysOn] { m_engine.SetSystemAudio(on); }).detach();
+        }
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Mix system/Discord audio into the transcript (loopback).\n"
+                              "Transcribes both sides of a conversation and logs it to a file.\n"
+                              "Pick a loopback source on the right first.");
+
+        ImGui::SameLine(0, 12);
+
+        // Loopback source dropdown
+        const char* preview = status.loopback_device_name.empty()
+            ? "Select loopback source..." : status.loopback_device_name.c_str();
+        ImGui::SetNextItemWidth(280);
+        if (ImGui::BeginCombo("##LoopbackDev", preview)) {
+            for (const auto& dev : status.loopback_devices) {
+                std::string label = dev.name;
+                if (dev.is_loopback) label += "  [loopback]";
+                if (!dev.supported) label += "  (no 48kHz)";
+                bool selected = (dev.index == status.loopback_device_index);
+                if (!dev.supported) ImGui::BeginDisabled();
+                if (ImGui::Selectable(label.c_str(), selected)) {
+                    if (dev.index != status.loopback_device_index) {
+                        std::thread([this, idx = dev.index] { m_engine.SetLoopbackDevice(idx); }).detach();
+                    }
+                }
+                if (!dev.supported) ImGui::EndDisabled();
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+
+        // Conversation-log indicator
+        if (status.conversation_log_active) {
+            ImGui::SameLine(0, 12);
+            ImGui::TextColored(ImVec4(0.6f, 0.85f, 0.6f, 1.0f), "logging");
+            if (ImGui::IsItemHovered() && !status.conversation_log_path.empty())
+                ImGui::SetTooltip("%s", status.conversation_log_path.c_str());
+        }
+    }
     }
 
-    // --- Last transcript ---
-    ImGui::TextDisabled("Raw:");
-    ImGui::Indent(8);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
-    ImGui::TextWrapped("%s", status.last_raw_transcript.empty()
-                       ? "(waiting for speech...)" : status.last_raw_transcript.c_str());
-    ImGui::PopStyleColor();
-    ImGui::Unindent(8);
-
-    ImGui::Separator();
-
-    ImGui::Text("Output:");
-    ImGui::Indent(8);
-    // Detect new output and trigger flash
-    if (status.last_cleaned_text != m_lastOutputText && !status.last_cleaned_text.empty()) {
-        m_lastOutputText = status.last_cleaned_text;
-        m_outputFlashTime = ImGui::GetTime();
-    }
-    // Flash: bright white-green → normal green over 300ms
-    float flashAge = (float)(ImGui::GetTime() - m_outputFlashTime);
-    float flashAlpha = fmaxf(0.0f, 1.0f - flashAge / 0.3f);
-    ImVec4 outputColor = ImVec4(0.4f + 0.6f * flashAlpha, 1.0f, 0.4f + 0.6f * flashAlpha, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_Text, outputColor);
-    ImGui::TextWrapped("%s", status.last_cleaned_text.empty()
-                       ? "(waiting for speech...)" : status.last_cleaned_text.c_str());
-    ImGui::PopStyleColor();
-    ImGui::Unindent(8);
-
-    ImGui::Separator();
-
+    // --- Diagnostics ---
+    if (ImGui::CollapsingHeader("Diagnostics")) {
     // --- Latency ---
     float gen_ms = status.latency.transcribe_ms + status.latency.cleanup_ms
                  + status.latency.type_ms;
@@ -1359,12 +1664,6 @@ void DictationApp::Render()
     };
     ImGui::TextColored(colorForMs(gen_ms), "Generation: %.0f ms", gen_ms);
     ImGui::TextColored(colorForMs(total_ms), "Total:      %.0f ms", total_ms);
-
-    // --- Error ---
-    if (!status.last_error.empty()) {
-        ImGui::Separator();
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
-                           "Error: %s", status.last_error.c_str());
     }
 
     ImGui::End();
