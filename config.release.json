@@ -1,0 +1,142 @@
+{
+  "whisper_model": "Purfview/faster-distil-whisper-large-v3.5",
+  "mic_device_index": 0,
+  "hotkey": "f1",
+  "media_hotkey": "",
+  "energy_threshold": 0.01,
+  "silence_timeout": 1.5,
+  "max_speech_seconds": 15,
+  "llm_cleanup": false,
+  "llm_model": "qwen3-4b-instruct-2507-ud-gguf",
+  "llm_mode": "raw",
+  "command_prefix": "command",
+  "voice_commands": {
+    "new line": "shift_enter",
+    "newline": "shift_enter",
+    "send": "enter",
+    "clear": "select_all_delete",
+    "copy": "copy",
+    "paste": "paste",
+    "stop dictation": "stop",
+    "stop dictating": "stop",
+    "undo": "undo",
+    "redo": "redo"
+  },
+  "llm_modes": {
+    "raw": {
+      "llm_cleanup": false
+    },
+    "clean": {
+      "llm_cleanup": true,
+      "llm_system_prompt_file": "prompts/clean_system.txt",
+      "llm_temperature": 0.1,
+      "llm_max_tokens": 500
+    },
+    "prompt": {
+      "llm_cleanup": true,
+      "llm_system_prompt_file": "prompts/prompt_system.txt",
+      "llm_temperature": 0.3,
+      "llm_max_tokens": 1000,
+      "llm_max_output_ratio": 3.0,
+      "newline_key": "shift+enter"
+    },
+    "dev": {
+      "llm_cleanup": true,
+      "llm_system_prompt_file": "prompts/dev_system.txt",
+      "llm_temperature": 0.2,
+      "llm_max_tokens": 1000,
+      "llm_max_output_ratio": 3.0
+    },
+    "detailed": {
+      "llm_cleanup": true,
+      "llm_system_prompt_file": "prompts/detailed_system.txt",
+      "llm_temperature": 0.2,
+      "llm_max_tokens": 1000,
+      "llm_max_output_ratio": 8.0
+    }
+  },
+  "profiles": {
+    "Default": {
+      "llm_mode": "raw"
+    },
+    "Terminal": {
+      "llm_mode": "raw"
+    },
+    "LM Studio": {
+      "llm_mode": "prompt",
+      "voice_commands": {
+        "new line": "shift_enter",
+        "newline": "shift_enter",
+        "send": "ctrl_enter",
+        "clear": "select_all_delete",
+        "copy": "copy",
+        "paste": "paste",
+        "stop dictation": "stop"
+      }
+    },
+    "VS Code": {
+      "llm_mode": "dev"
+    },
+    "Meeting": {
+      "llm_mode": "clean"
+    }
+  },
+  "llm_backend": {
+    "type": "lmstudio",
+    "lmstudio": {
+      "url": "http://localhost:1234/v1/chat/completions",
+      "cache_prompt": true
+    },
+    "llamacpp": {
+      "url": "http://localhost:8080",
+      "cache_prompt": true,
+      "chat_template": "chatml"
+    },
+    "timeout": 10
+  },
+  "dsp": {
+    "noise_gate": {
+      "enabled": true,
+      "open_threshold_dbfs": -45.0,
+      "close_threshold_dbfs": -50.0,
+      "floor_db": -25.0,
+      "hold_ms": 100.0,
+      "attack_ms": 5.0,
+      "release_ms": 150.0
+    },
+    "compressor": {
+      "enabled": false,
+      "threshold_dbfs": -15.0,
+      "ratio": 2.0,
+      "attack_ms": 5.0,
+      "release_ms": 100.0,
+      "makeup_gain_db": 0.0
+    }
+  },
+  "auto_detect": {
+    "enabled": false,
+    "poll_interval_ms": 500,
+    "rules": [
+      {
+        "window_pattern": ".*LM Studio.*",
+        "profile": "LM Studio"
+      },
+      {
+        "window_pattern": ".*Visual Studio Code.*",
+        "profile": "VS Code"
+      },
+      {
+        "window_pattern": ".*Windows Terminal.*",
+        "profile": "Terminal"
+      },
+      {
+        "window_pattern": ".*Command Prompt.*",
+        "profile": "Terminal"
+      },
+      {
+        "window_pattern": ".*PowerShell.*",
+        "profile": "Terminal"
+      }
+    ]
+  }
+}

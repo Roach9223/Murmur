@@ -18,6 +18,11 @@ imgui.ini
 
 # Murmur distributable (built with build.bat, distributed via GitHub Releases)
 Murmur/
+Murmur-release.zip
+
+# Runtime output (voice recordings / saved transcripts — personal data, never commit)
+Recordings/
+Transcriptions/
 
 # IDE / tools
 .vs/
