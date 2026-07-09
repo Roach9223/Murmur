@@ -114,6 +114,20 @@ bool EngineClient::PollStatus() {
             m_status.mode_names.clear();
             if (j.contains("mode_names") && j["mode_names"].is_array())
                 for (auto& m : j["mode_names"]) m_status.mode_names.push_back(m.get<std::string>());
+
+            m_status.whisper_model = j.value("whisper_model", std::string{});
+            m_status.whisper_device = j.value("whisper_device", std::string{});
+            m_status.whisper_model_auto = j.value("whisper_model_auto", true);
+            m_status.whisper_models.clear();
+            if (j.contains("whisper_models") && j["whisper_models"].is_array()) {
+                for (auto& m : j["whisper_models"]) {
+                    if (!m.is_object()) continue;
+                    EngineStatus::WhisperModel wm;
+                    wm.id = m.value("id", std::string{});
+                    wm.label = m.value("label", std::string{});
+                    m_status.whisper_models.push_back(wm);
+                }
+            }
             m_status.profile_names.clear();
             if (j.contains("profile_names") && j["profile_names"].is_array())
                 for (auto& p : j["profile_names"]) m_status.profile_names.push_back(p.get<std::string>());
@@ -306,6 +320,15 @@ bool EngineClient::SetMode(const std::string& mode) {
     cli.set_read_timeout(2);
     json body = {{"mode", mode}};
     auto res = cli.Post("/control/set_mode", body.dump(), "application/json");
+    return res && res->status == 200;
+}
+
+bool EngineClient::SetWhisperModel(const std::string& model) {
+    httplib::Client cli(m_host, m_port);
+    cli.set_connection_timeout(2);
+    cli.set_read_timeout(2);
+    json body = {{"model", model}};
+    auto res = cli.Post("/control/set_whisper_model", body.dump(), "application/json");
     return res && res->status == 200;
 }
 

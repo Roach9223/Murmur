@@ -138,5 +138,6 @@
         "profile": "Terminal"
       }
     ]
-  }
+  },
+  "whisper_model_auto": true
 }

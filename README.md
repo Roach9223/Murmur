@@ -107,7 +107,7 @@ The UI launches the Python engine automatically in the background. The first run
 > [!NOTE]
 > **Windows SmartScreen**: the release is not code-signed, so the first launch shows "Windows protected your PC." Click **More info → Run anyway**. Some antivirus tools may also flag the keyboard hook Murmur uses to type for you — that's the app's core feature, not malware; add an exclusion if needed.
 >
-> **No NVIDIA GPU?** Murmur automatically falls back to CPU transcription (slower, but functional).
+> **No NVIDIA GPU?** (AMD/Intel GPU or none) Murmur detects this at startup and automatically runs a CPU-sized Whisper model (`small.en`) — near-real-time dictation on a modern CPU. You can pick a different model anytime from the **Model** dropdown in the UI. AMD/Intel GPUs can't accelerate inference yet (the engine is CUDA-only); a Vulkan backend for non-NVIDIA GPUs is planned.
 
 ### Option 2: From Source
 
@@ -193,7 +193,7 @@ Optional **Silero VAD** (neural speech detection) is available when running from
 
 <br>
 
-Murmur ships with `Purfview/faster-distil-whisper-large-v3.5` — near-large-v3 accuracy at a fraction of the latency and VRAM. You can switch models by changing `whisper_model` in `config.json` (e.g. to `large-v3` for maximum accuracy):
+Murmur picks a model for your hardware automatically: NVIDIA GPU → `Purfview/faster-distil-whisper-large-v3.5` (near-large-v3 accuracy at a fraction of the latency and VRAM); no CUDA → `small.en` (fast on CPU). Switch anytime from the **Model** dropdown in the UI — your choice is remembered. A **GPU/CPU badge** next to the dropdown shows which hardware is actually doing the work.
 
 | | large-v3 | large-v3-turbo |
 |---|---|---|

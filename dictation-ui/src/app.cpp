@@ -461,6 +461,56 @@ void DictationApp::Render()
             ImGui::EndCombo();
         }
         ImGui::SameLine(0, 16);
+
+        // Whisper model picker — friendly labels, current model marked.
+        // Switching pins the choice (turns hardware auto-select off).
+        ImGui::Text("Model:");
+        ImGui::SameLine(0, 6);
+        {
+            const char* modelPreview = status.whisper_model.empty()
+                ? "(loading...)" : status.whisper_model.c_str();
+            // Prefer the friendly label for the preview
+            for (const auto& wm : status.whisper_models)
+                if (wm.id == status.whisper_model) { modelPreview = wm.label.c_str(); break; }
+            ImGui::SetNextItemWidth(250);
+            if (status.model_loading) ImGui::BeginDisabled();
+            if (ImGui::BeginCombo("##WhisperModel", modelPreview)) {
+                for (const auto& wm : status.whisper_models) {
+                    bool selected = (wm.id == status.whisper_model);
+                    if (ImGui::Selectable(wm.label.c_str(), selected) && !selected)
+                        m_engine.SetWhisperModel(wm.id);
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            if (status.model_loading) ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                if (status.model_loading)
+                    ImGui::SetTooltip("Loading model...");
+                else
+                    ImGui::SetTooltip("Whisper model. Larger = more accurate, needs an NVIDIA GPU\n"
+                                      "to stay fast. New models download on first use (~0.1-1.5GB).%s",
+                                      status.whisper_model_auto
+                                          ? "\nCurrently auto-selected for this machine's hardware."
+                                          : "");
+            }
+
+            // Device badge: which hardware is actually running inference
+            ImGui::SameLine(0, 8);
+            if (status.whisper_device == "cuda") {
+                ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.35f, 1.0f), "GPU");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Transcribing on NVIDIA GPU (CUDA)");
+            } else if (!status.whisper_device.empty()) {
+                ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.20f, 1.0f), "CPU");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Transcribing on CPU — no CUDA-capable NVIDIA GPU found.\n"
+                                      "AMD/Intel GPUs are not supported for inference yet.\n"
+                                      "Small EN / Base EN are recommended for CPU.");
+            }
+        }
+
+        ImGui::SameLine(0, 16);
         ImGui::Text("Mic:");
         ImGui::SameLine(0, 6);
         ImGui::SetNextItemWidth(-1);

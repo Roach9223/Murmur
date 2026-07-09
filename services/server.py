@@ -12,13 +12,16 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 
 # --- Request models ---
 
 class SetModeRequest(BaseModel):
     mode: str
+
+class SetWhisperModelRequest(BaseModel):
+    model: str
 
 class SetProfileRequest(BaseModel):
     profile: str
@@ -121,6 +124,16 @@ def create_app(engine) -> FastAPI:
             raise HTTPException(400, f"Unknown mode '{req.mode}'. Valid: {valid_modes}")
         engine._apply_mode(req.mode)
         return {"ok": True, "mode": req.mode}
+
+    @app.post("/control/set_whisper_model")
+    def control_set_whisper_model(req: SetWhisperModelRequest):
+        from services.config import WHISPER_MODEL_CATALOG
+        valid = [mid for mid, _ in WHISPER_MODEL_CATALOG]
+        if req.model not in valid:
+            raise HTTPException(400, f"Unknown model '{req.model}'. Valid: {valid}")
+        if not engine.set_whisper_model(req.model):
+            raise HTTPException(409, "A model is already loading — try again shortly")
+        return {"ok": True, "model": req.model, "loading": True}
 
     @app.post("/control/set_profile")
     def control_set_profile(req: SetProfileRequest):

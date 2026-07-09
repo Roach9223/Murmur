@@ -1,5 +1,6 @@
 {
   "whisper_model": "Purfview/faster-distil-whisper-large-v3.5",
+  "whisper_model_auto": true,
   "mic_device_index": 0,
   "hotkey": "f1",
   "media_hotkey": "",

@@ -6,8 +6,23 @@ import os
 logger = logging.getLogger(__name__)
 
 
+# Curated Whisper model catalog for the UI picker: (model id, friendly label).
+# GPU-class models need CUDA to be responsive; CPU-class run near-real-time
+# on a modern CPU.
+WHISPER_MODEL_CATALOG = [
+    ("Purfview/faster-distil-whisper-large-v3.5", "Distil Large v3.5 — best (GPU)"),
+    ("large-v3", "Large v3 — max accuracy (GPU)"),
+    ("large-v3-turbo", "Large v3 Turbo — fast (GPU)"),
+    ("medium.en", "Medium EN — balanced (slow on CPU)"),
+    ("small.en", "Small EN — fast on CPU"),
+    ("base.en", "Base EN — fastest, lower accuracy"),
+]
+GPU_DEFAULT_WHISPER_MODEL = "Purfview/faster-distil-whisper-large-v3.5"
+CPU_DEFAULT_WHISPER_MODEL = "small.en"
+
 DEFAULTS = {
     "whisper_model": "Purfview/faster-distil-whisper-large-v3.5",
+    "whisper_model_auto": True,
     "mic_device_index": 0,
     "hotkey": "f1",
     "energy_threshold": 0.01,

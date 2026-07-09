@@ -58,6 +58,16 @@ struct EngineStatus {
     std::vector<std::string> mode_names;
     std::vector<std::string> profile_names;
 
+    // Whisper model picker
+    struct WhisperModel {
+        std::string id;
+        std::string label;
+    };
+    std::string whisper_model;
+    std::string whisper_device;   // "cuda" or "cpu"
+    bool whisper_model_auto = true;
+    std::vector<WhisperModel> whisper_models;
+
     std::vector<float> fft_bins;
     bool is_speech = false;
 
@@ -140,6 +150,7 @@ public:
     bool Stop();
     bool SetMode(const std::string& mode);
     bool SetProfile(const std::string& profile);
+    bool SetWhisperModel(const std::string& model);
     bool SendCommand(const std::string& cmd);
     bool Shutdown();
 

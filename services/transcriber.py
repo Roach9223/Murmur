@@ -12,8 +12,43 @@ class TranscriptionEngine:
         self._model_size = model_size
         self._device = device
         self._compute_type = compute_type
+        self._requested_device = device
+        self._requested_compute = compute_type
         self._model_dir = model_dir
         self._model = None
+
+    @staticmethod
+    def cuda_available() -> bool:
+        """True if ctranslate2 can see a CUDA device (NVIDIA only — AMD GPUs
+        have no ctranslate2 backend on Windows and run in CPU mode)."""
+        try:
+            import ctranslate2
+            return ctranslate2.get_cuda_device_count() > 0
+        except Exception:
+            return False
+
+    @property
+    def device(self) -> str:
+        return self._device
+
+    @property
+    def compute_type(self) -> str:
+        return self._compute_type
+
+    @property
+    def model_size(self) -> str:
+        return self._model_size
+
+    def reload(self, model_size: str):
+        """Switch to a different Whisper model. Drops the old model first so
+        both never occupy VRAM at once, then retries the preferred device."""
+        old = self._model
+        self._model = None
+        del old
+        self._model_size = model_size
+        self._device = self._requested_device
+        self._compute_type = self._requested_compute
+        self.load_model()
 
     def load_model(self):
         """Load the Whisper model. Call explicitly or it auto-loads on first transcribe()."""

@@ -14,7 +14,9 @@ import keyboard
 import mouse
 import sounddevice as sd
 
-from services.config import ConfigManager, LLM_URL, LLM_TIMEOUT, WHISPER_RATE, RECORD_RATE, COMPUTE_TYPE, DEBOUNCE_SEC
+from services.config import (ConfigManager, LLM_URL, LLM_TIMEOUT, WHISPER_RATE, RECORD_RATE,
+                             COMPUTE_TYPE, DEBOUNCE_SEC, WHISPER_MODEL_CATALOG,
+                             GPU_DEFAULT_WHISPER_MODEL, CPU_DEFAULT_WHISPER_MODEL)
 from services.audio import AudioCaptureService
 from services.dsp import NoiseGate, Compressor, DSPChain
 from services.transcriber import TranscriptionEngine
@@ -109,8 +111,22 @@ class DictationApp:
         queue_maxsize = self.config.cfg.get("audio_queue_maxsize", 500)
         self.audio = AudioCaptureService(mic_index, dsp_chain=self.dsp_chain, queue_maxsize=queue_maxsize)
         model_dir = os.path.join(self.config.project_dir, "models")
+
+        # Hardware-aware model selection: with whisper_model_auto on (the
+        # shipped default), machines without CUDA (AMD GPUs, iGPUs, no GPU)
+        # get a CPU-sized model instead of dragging a large model through
+        # CPU inference at several seconds per chunk. Picking a model in the
+        # UI turns auto off and pins the choice.
+        whisper_model = self.config.get("whisper_model")
+        if self.config.cfg.get("whisper_model_auto", True):
+            if TranscriptionEngine.cuda_available():
+                whisper_model = self.config.cfg.get("whisper_model", GPU_DEFAULT_WHISPER_MODEL)
+            else:
+                whisper_model = CPU_DEFAULT_WHISPER_MODEL
+                logger.info("[model] No CUDA device — auto-selected %s for CPU "
+                            "(pick a different model in the UI to override)", whisper_model)
         self.transcriber = TranscriptionEngine(
-            self.config.get("whisper_model"), "cuda", COMPUTE_TYPE,
+            whisper_model, "cuda", COMPUTE_TYPE,
             model_dir=model_dir,
         )
         self.commands = CommandRouter(
@@ -1087,6 +1103,52 @@ class DictationApp:
                 f.write("\n")
         except Exception as e:
             logger.warning("Failed to save DSP config: %s", e)
+
+    def _save_config_keys(self, updates: dict):
+        """Persist selected top-level keys to config.json."""
+        config_path = os.path.join(self.config.project_dir, "config.json")
+        try:
+            cfg = {}
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            cfg.update(updates)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+        except Exception as e:
+            logger.warning("Failed to save config keys %s: %s", list(updates), e)
+
+    # --- Whisper model switching ---
+
+    def set_whisper_model(self, model_name: str):
+        """Switch the Whisper model at runtime. Loads in a background thread;
+        transcription resumes when the new model is ready."""
+        if self._model_loading:
+            logger.warning("[model] Ignoring switch to %s — a model is already loading", model_name)
+            return False
+        if model_name == self.transcriber.model_size:
+            return True
+        if self.recording:
+            self.toggle_recording()
+
+        self._model_loading = True
+        self.config.cfg["whisper_model"] = model_name
+        self.config.cfg["whisper_model_auto"] = False  # explicit choice pins the model
+        self._save_config_keys({"whisper_model": model_name, "whisper_model_auto": False})
+        logger.info("  [model] Switching Whisper model to %s", model_name)
+
+        def _reload():
+            try:
+                self.transcriber.reload(model_name)
+            except Exception as e:
+                logger.error("[model] Failed to load %s: %s", model_name, e)
+                self.engine_state.last_error = f"Model load failed: {e}"
+            finally:
+                self._model_loading = False
+
+        threading.Thread(target=_reload, daemon=True, name="model-reload").start()
+        return True
 
     # --- WAV Recording ---
 

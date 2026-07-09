@@ -6,6 +6,11 @@ from dataclasses import dataclass, field
 from services.audio import AudioCaptureService
 
 
+def _whisper_model_catalog():
+    from services.config import WHISPER_MODEL_CATALOG
+    return WHISPER_MODEL_CATALOG
+
+
 class EnginePhase(str, enum.Enum):
     """Granular engine state exposed via /status API."""
     IDLE = "idle"
@@ -50,6 +55,13 @@ class EngineState:
             "state": self.phase.value,
             "mic_device": app.config.get("mic_device_index"),
             "model_whisper": app.config.get("whisper_model"),
+            "whisper_model": app.transcriber.model_size,
+            "whisper_device": app.transcriber.device,
+            "whisper_compute": app.transcriber.compute_type,
+            "whisper_model_auto": app.config.cfg.get("whisper_model_auto", True),
+            "whisper_models": [
+                {"id": mid, "label": label} for mid, label in _whisper_model_catalog()
+            ],
             "cleanup_enabled": app.llm_enabled,
             "cleanup_model": app.config.get("llm_model") if app.llm_enabled else None,
             "cleanup_backend": app.config.cfg.get("llm_backend", {}).get("type", "lmstudio"),
