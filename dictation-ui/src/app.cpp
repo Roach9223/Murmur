@@ -32,6 +32,34 @@ static std::wstring Utf8ToWide(const std::string& s) {
 static const char* kCalFallbackPrompt =
     "The quick brown fox jumps over the lazy dog near the river bank.";
 
+// Slider that commits once, on release. The naive pattern (seed the value
+// from polled status + IsItemDeactivatedAfterEdit) commits a STALE value:
+// on the release frame ImGui no longer writes the dragged value into the
+// local, which is re-seeded from status — so the slider "rebounds". Cache
+// the in-progress value in ImGui's per-window storage instead.
+static bool SliderCommit(const char* label, float statusVal, float vmin, float vmax,
+                         const char* fmt, float* outCommitted)
+{
+    ImGuiStorage* st = ImGui::GetStateStorage();
+    const ImGuiID id = ImGui::GetID(label);
+    const ImGuiID idFlag = id ^ 0x9E3779B9u;  // second storage slot: "editing" flag
+
+    float v = st->GetInt(idFlag, 0) ? st->GetFloat(id, statusVal) : statusVal;
+    ImGui::SliderFloat(label, &v, vmin, vmax, fmt);
+
+    if (ImGui::IsItemActive()) {
+        st->SetInt(idFlag, 1);
+        st->SetFloat(id, v);
+    }
+    bool committed = ImGui::IsItemDeactivatedAfterEdit();
+    if (!ImGui::IsItemActive())
+        st->SetInt(idFlag, 0);  // cleared AFTER v was seeded from the cache this frame
+
+    if (committed && outCommitted)
+        *outCommitted = v;
+    return committed;
+}
+
 DictationApp::DictationApp(EngineClient& engine, EngineProcess& process)
     : m_engine(engine), m_process(process) {}
 
@@ -1375,16 +1403,6 @@ void DictationApp::Render()
     // --- Audio Processing (set-once controls; collapsed by default) ---
     if (ImGui::CollapsingHeader("Audio Processing")) {
         if (status.has_dsp) {
-        // Slider lock lives at section level — it guards BOTH gate and
-        // compressor sliders, so it must stay reachable when the gate is off
-        if (ImGui::SmallButton(m_dspLocked ? "Unlock Sliders" : "Lock Sliders")) {
-            m_dspLocked = !m_dspLocked;
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Sliders are locked by default to prevent accidental changes.\n"
-                              "Auto Calibrate sets good values without unlocking.");
-        ImGui::Spacing();
-
         // === Noise Gate ===
         {
             // Header line: toggle + status
@@ -1450,18 +1468,38 @@ void DictationApp::Render()
                     ImGui::Dummy(ImVec2(barWidth, barHeight));
                 }
 
+                // Slider lock — a full colored button so it's actually
+                // discoverable (the old SmallButton was invisible)
+                if (m_dspLocked) {
+                    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f, 0.42f, 0.12f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.65f, 0.52f, 0.18f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.45f, 0.34f, 0.08f, 1.0f));
+                } else {
+                    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.55f, 0.15f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.65f, 0.20f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.45f, 0.10f, 1.0f));
+                }
+                if (ImGui::Button(m_dspLocked ? "Sliders Locked  —  click to edit"
+                                              : "Sliders Unlocked  —  click to lock",
+                                  ImVec2(240, 24))) {
+                    m_dspLocked = !m_dspLocked;
+                }
+                ImGui::PopStyleColor(3);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Locked by default to prevent accidental changes.\n"
+                                      "Auto Calibrate sets good values without unlocking.");
+
                 if (m_dspLocked) ImGui::BeginDisabled();
                 ImGui::PushItemWidth(-140);
 
                 float openTh = status.gate.open_threshold_dbfs;
                 float closeTh = status.gate.close_threshold_dbfs;
-                float floorDb = status.gate.floor_db;
 
-                // Commit on release, not per-frame: a drag fires the callback
-                // every frame, which used to spam ~100 blocking HTTP posts and
-                // config.json rewrites per adjustment.
-                ImGui::SliderFloat("Open Threshold##gate", &openTh, -80.0f, 0.0f, "%.1f dBFS");
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                // Commit once on release (SliderCommit) — a drag used to fire
+                // ~100 blocking HTTP posts + config rewrites per adjustment.
+                float committed;
+                if (SliderCommit("Open Threshold##gate", openTh, -80.0f, 0.0f, "%.1f dBFS", &committed)) {
+                    openTh = committed;
                     if (openTh < -77.0f) openTh = -77.0f;  // keep close >= -80 after the gap push
                     if (openTh < closeTh + 3.0f) closeTh = openTh - 3.0f;
                     nlohmann::json body = {{"dsp", {{"noise_gate", {
@@ -1474,8 +1512,8 @@ void DictationApp::Render()
                     ImGui::SetTooltip("Audio louder than this opens the gate (mic \"turns on\").\n"
                                       "Set between your room noise and speech level.");
 
-                ImGui::SliderFloat("Close Threshold##gate", &closeTh, -80.0f, 0.0f, "%.1f dBFS");
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                if (SliderCommit("Close Threshold##gate", closeTh, -80.0f, 0.0f, "%.1f dBFS", &committed)) {
+                    closeTh = committed;
                     if (closeTh > -3.0f) closeTh = -3.0f;  // keep open <= 0 after the gap push
                     if (closeTh > openTh - 3.0f) openTh = closeTh + 3.0f;
                     nlohmann::json body = {{"dsp", {{"noise_gate", {
@@ -1488,9 +1526,8 @@ void DictationApp::Render()
                     ImGui::SetTooltip("Audio quieter than this closes the gate again.\n"
                                       "Kept at least 3 dB below Open so the gate doesn't flutter.");
 
-                ImGui::SliderFloat("Floor##gate", &floorDb, -80.0f, 0.0f, "%.1f dB");
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    nlohmann::json body = {{"dsp", {{"noise_gate", {{"floor_db", floorDb}}}}}};
+                if (SliderCommit("Floor##gate", status.gate.floor_db, -80.0f, 0.0f, "%.1f dB", &committed)) {
+                    nlohmann::json body = {{"dsp", {{"noise_gate", {{"floor_db", committed}}}}}};
                     m_engine.PostDSPConfig(body.dump());
                 }
                 if (ImGui::IsItemHovered())
@@ -1530,91 +1567,17 @@ void DictationApp::Render()
             }
         }
 
-        ImGui::Spacing();
-
-        // === Compressor ===
-        {
-            bool compEnabled = status.compressor.enabled;
-            if (compEnabled) {
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.35f, 0.65f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.45f, 0.75f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.25f, 0.55f, 1.0f));
-            } else {
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
-            }
-            if (ImGui::Button(compEnabled ? "Comp: ON" : "Comp: OFF", ImVec2(100, 22))) {
-                nlohmann::json body = {{"dsp", {{"compressor", {{"enabled", !compEnabled}}}}}};
-                m_engine.PostDSPConfig(body.dump());
-            }
-            ImGui::PopStyleColor(3);
+        // NOTE: the compressor UI was removed deliberately — Whisper doesn't
+        // benefit from compression and it confused non-audio users. The
+        // engine still supports it via config.json / POST /config for the
+        // rare user who wants it (a "Comp ON (config)" tag shows if enabled).
+        if (status.compressor.enabled) {
+            ImGui::Spacing();
+            ImGui::TextDisabled("Compressor: ON (enabled via config.json)");
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Compressor: evens out loud and quiet speech.\n"
-                                  "Whisper usually doesn't need it — leave OFF unless\n"
-                                  "your voice level varies a lot.");
-
-            ImGui::SameLine();
-
-            // GR meter (always visible, even when OFF)
-            {
-                ImGui::Text("GR:");
-                ImGui::SameLine();
-                ImVec2 grPos = ImGui::GetCursorScreenPos();
-                float grWidth = 120.0f;
-                float grHeight = 14.0f;
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                dl->AddRectFilled(grPos, ImVec2(grPos.x + grWidth, grPos.y + grHeight),
-                                  IM_COL32(30, 30, 30, 255));
-                // GR fills right-to-left in orange
-                float grT = fminf(m_smoothGR / 20.0f, 1.0f);
-                if (grT > 0.001f) {
-                    dl->AddRectFilled(ImVec2(grPos.x + grWidth * (1.0f - grT), grPos.y),
-                                      ImVec2(grPos.x + grWidth, grPos.y + grHeight),
-                                      IM_COL32(220, 140, 30, 200));
-                }
-                ImGui::Dummy(ImVec2(grWidth, grHeight));
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Gain reduction — how much the compressor is\n"
-                                      "currently turning the signal down.");
-                ImGui::SameLine();
-                ImGui::Text("%.1f dB", m_smoothGR);
-            }
-
-            if (compEnabled) {
-                if (m_dspLocked) ImGui::BeginDisabled();
-                ImGui::PushItemWidth(-140);
-
-                float compTh = status.compressor.threshold_dbfs;
-                float compRatio = status.compressor.ratio;
-                float compMakeup = status.compressor.makeup_gain_db;
-
-                ImGui::SliderFloat("Threshold##comp", &compTh, -60.0f, 0.0f, "%.1f dBFS");
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    nlohmann::json body = {{"dsp", {{"compressor", {{"threshold_dbfs", compTh}}}}}};
-                    m_engine.PostDSPConfig(body.dump());
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Compression kicks in when your voice is louder than this.");
-                ImGui::SliderFloat("Ratio##comp", &compRatio, 1.0f, 20.0f, "%.1f:1");
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    nlohmann::json body = {{"dsp", {{"compressor", {{"ratio", compRatio}}}}}};
-                    m_engine.PostDSPConfig(body.dump());
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("How strongly loud parts are squashed. 2:1 is gentle, 10:1 is heavy.");
-                ImGui::SliderFloat("Makeup##comp", &compMakeup, 0.0f, 24.0f, "%.1f dB");
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    nlohmann::json body = {{"dsp", {{"compressor", {{"makeup_gain_db", compMakeup}}}}}};
-                    m_engine.PostDSPConfig(body.dump());
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Volume added back after compression. Too much can clip —\n"
-                                      "watch for CLIP in the spectrum (output is safety-limited).");
-
-                ImGui::PopItemWidth();
-                if (m_dspLocked) ImGui::EndDisabled();
-            }
+                ImGui::SetTooltip("Compressor UI was retired; it is still active because\n"
+                                  "config.json enables it. Set dsp.compressor.enabled to\n"
+                                  "false to turn it off.");
         }
 
         // Spectrum source toggle
