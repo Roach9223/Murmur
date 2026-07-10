@@ -151,7 +151,7 @@ if %MAKE_RELEASE%==1 (
     echo NOTE: GitHub release assets are limited to 2 GB each.
 
     :: Slim update package for the in-app updater: only what changes between
-    :: releases (exes, python services, prompts, runtime DLLs) — NOT the CUDA
+    :: releases -- exes, python services, prompts, runtime DLLs. No CUDA
     :: DLLs, python runtime, or models. Attach Murmur-update.zip to a release
     :: ONLY when dependencies are unchanged; the updater prefers it and falls
     :: back to the full zip when absent.
