@@ -117,6 +117,7 @@ class EngineState:
                 "seconds": round(app.wav_recorder.seconds_written, 1) if app.wav_recorder else 0,
                 "dropped_frames": app.wav_recorder.dropped_frames if app.wav_recorder else 0,
                 "source": app.record_source,
+                "error": app.wav_recorder.error if app.wav_recorder else "",
             },
             "ffmpeg_available": getattr(app, 'ffmpeg_available', False),
             "recordings_dir": os.path.join(

@@ -718,10 +718,12 @@ void DictationApp::Render()
 
 
     // --- Transcription Progress Popup ---
-    // Auto-open when transcription starts (e.g. via API)
-    if (status.file_transcription.active && !m_showTranscriptionPopup) {
+    // Auto-open only when a NEW job starts (edge-detect) — so the user can
+    // hide the popup mid-job without it instantly reopening
+    if (status.file_transcription.active && !m_wasFtActive) {
         m_showTranscriptionPopup = true;
     }
+    m_wasFtActive = status.file_transcription.active;
 
     if (m_showTranscriptionPopup) {
         ImGui::OpenPopup("Transcription Progress");
@@ -776,6 +778,14 @@ void DictationApp::Render()
                 float t = (float)fmod(ImGui::GetTime() * 0.5, 1.0);
                 ImGui::ProgressBar(t, ImVec2(-1, 0));
             }
+
+            ImGui::Spacing();
+            if (ImGui::Button("Hide", ImVec2(80, 0))) {
+                m_showTranscriptionPopup = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("Transcription continues in the background");
         } else if (ft.status == "done" || ft.status == "saving") {
             ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Transcription Complete");
             ImGui::Spacing();
@@ -798,6 +808,13 @@ void DictationApp::Render()
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(120);
                 ImGui::Combo("##style", &m_saveStyleIdx, styleLabels, IM_ARRAYSIZE(styleLabels));
+
+                // A failed save no longer discards the transcription — tell
+                // the user why it failed so they can retry
+                if (!ft.save_error.empty()) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                                       "Save failed: %s", ft.save_error.c_str());
+                }
 
                 ImGui::Spacing();
 
@@ -845,6 +862,7 @@ void DictationApp::Render()
                 if (ImGui::Button("Close##done_saved", ImVec2(80, 0))) {
                     m_showTranscriptionPopup = false;
                     m_transcriptLogLines.clear();
+                    m_saveFilename[0] = '\0';  // don't carry this name into the next job
                     ImGui::CloseCurrentPopup();
                 }
             }
@@ -923,18 +941,28 @@ void DictationApp::Render()
             snprintf(timerBuf, sizeof(timerBuf), "%.1fs remaining", fmaxf(0.0f, silenceDuration - elapsed));
             ImGui::TextDisabled("%s", timerBuf);
 
-            // Auto-transition to speech phase
+            // Auto-transition: launch the finish call off-thread (5s timeout —
+            // must not freeze the render loop)
             if (elapsed >= silenceDuration + 0.3f) {
-                if (m_engine.FinishSilenceCalibration()) {
-                    // 'status' was snapshotted before the finish call — re-fetch
-                    // so we show this run's measurement, not the previous one's
-                    m_calNoiseFloor = m_engine.GetStatus().gate.calibrated_noise_floor_dbfs;
+                m_calFinishFuture = std::async(std::launch::async,
+                    [this] { return m_engine.FinishSilenceCalibration(); });
+                m_calPhase = 10;
+            }
+        } else if (m_calPhase == 10) {
+            // Waiting for silence-phase result
+            ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Step 1 of 2: Measuring Room Noise");
+            ImGui::Spacing();
+            ImGui::TextDisabled("Processing...");
+            if (m_calFinishFuture.valid() &&
+                m_calFinishFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                if (m_calFinishFuture.get()) {
                     m_engine.StartSpeechCalibration();
                     m_calStartTime = now;
                     m_calPhase = 1;
                 } else {
                     m_calPhase = -1;
-                    m_calError = "Silence calibration failed — speech was detected. Please try again and stay quiet.";
+                    m_calError = "Room noise measurement failed — speech or a loud sound was "
+                                 "detected. Try again and stay quiet during step 1.";
                 }
             }
         } else if (m_calPhase == 1) {
@@ -961,19 +989,25 @@ void DictationApp::Render()
             snprintf(timerBuf, sizeof(timerBuf), "%.1fs remaining", fmaxf(0.0f, speechDuration - elapsed));
             ImGui::TextDisabled("%s", timerBuf);
 
-            // Auto-finish
+            // Auto-finish: off-thread, same as the silence phase
             if (elapsed >= speechDuration + 0.3f) {
-                if (m_engine.FinishCalibration()) {
-                    // Re-fetch: the frame's 'status' snapshot predates the finish
-                    EngineStatus fresh = m_engine.GetStatus();
-                    m_calNoiseFloor = fresh.gate.calibrated_noise_floor_dbfs;
-                    m_calSpeechLevel = fresh.gate.calibrated_speech_dbfs;
-                    m_calOpenThresh = fresh.gate.open_threshold_dbfs;
-                    m_calCloseThresh = fresh.gate.close_threshold_dbfs;
+                m_calFinishFuture = std::async(std::launch::async,
+                    [this] { return m_engine.FinishCalibration(); });
+                m_calPhase = 11;
+            }
+        } else if (m_calPhase == 11) {
+            // Waiting for final result
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Step 2 of 2: Measuring Speech Level");
+            ImGui::Spacing();
+            ImGui::TextDisabled("Computing thresholds...");
+            if (m_calFinishFuture.valid() &&
+                m_calFinishFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                if (m_calFinishFuture.get()) {
                     m_calPhase = 2;
                 } else {
                     m_calPhase = -1;
-                    m_calError = "Calibration failed — could not compute thresholds.";
+                    m_calError = "No speech detected — read the sentence aloud at your normal "
+                                 "speaking volume during step 2, then try again.";
                 }
             }
         } else if (m_calPhase == 2) {
@@ -1013,17 +1047,33 @@ void DictationApp::Render()
             ImGui::TextWrapped("%s", m_calError.c_str());
             ImGui::Spacing();
             if (ImGui::Button("Retry", ImVec2(100, 0))) {
-                m_calPhase = 0;
                 m_calError.clear();
                 m_calPrompt = kCalFallbackPrompt;
                 m_calPromptFuture = std::async(std::launch::async,
                     [this] { return m_engine.FetchCalibrationPrompt(); });
-                m_engine.StartCalibration();
-                m_calStartTime = now;
+                if (m_engine.StartCalibration()) {
+                    m_calPhase = 0;
+                    m_calStartTime = now;
+                } else {
+                    m_calPhase = -1;
+                    m_calError = "Could not start calibration — check that the engine "
+                                 "is connected and the noise gate is enabled.";
+                }
             }
             ImGui::SameLine();
             if (ImGui::Button("Close", ImVec2(100, 0))) {
                 m_showCalPopup = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+
+        // Cancel is always available mid-calibration — the engine's
+        // calibrating flags self-clear, so abandoning is safe
+        if (m_calPhase == 0 || m_calPhase == 1 || m_calPhase == 10 || m_calPhase == 11) {
+            ImGui::Spacing();
+            if (ImGui::Button("Cancel##cal", ImVec2(100, 0))) {
+                m_showCalPopup = false;
+                m_calPhase = 0;
                 ImGui::CloseCurrentPopup();
             }
         }
@@ -1325,6 +1375,16 @@ void DictationApp::Render()
     // --- Audio Processing (set-once controls; collapsed by default) ---
     if (ImGui::CollapsingHeader("Audio Processing")) {
         if (status.has_dsp) {
+        // Slider lock lives at section level — it guards BOTH gate and
+        // compressor sliders, so it must stay reachable when the gate is off
+        if (ImGui::SmallButton(m_dspLocked ? "Unlock Sliders" : "Lock Sliders")) {
+            m_dspLocked = !m_dspLocked;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Sliders are locked by default to prevent accidental changes.\n"
+                              "Auto Calibrate sets good values without unlocking.");
+        ImGui::Spacing();
+
         // === Noise Gate ===
         {
             // Header line: toggle + status
@@ -1343,6 +1403,9 @@ void DictationApp::Render()
                 m_engine.PostDSPConfig(body.dump());
             }
             ImGui::PopStyleColor(3);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Noise gate: mutes the mic between phrases so fans,\n"
+                                  "keyboards, and room noise don't reach Whisper.");
 
             ImGui::SameLine();
             ImGui::Text("Input: %.1f dBFS", m_smoothInputDbfs);
@@ -1387,11 +1450,6 @@ void DictationApp::Render()
                     ImGui::Dummy(ImVec2(barWidth, barHeight));
                 }
 
-                // Sliders (locked by default to prevent accidental changes)
-                if (ImGui::SmallButton(m_dspLocked ? "Unlock Sliders" : "Lock Sliders")) {
-                    m_dspLocked = !m_dspLocked;
-                }
-
                 if (m_dspLocked) ImGui::BeginDisabled();
                 ImGui::PushItemWidth(-140);
 
@@ -1399,8 +1457,12 @@ void DictationApp::Render()
                 float closeTh = status.gate.close_threshold_dbfs;
                 float floorDb = status.gate.floor_db;
 
-                if (ImGui::SliderFloat("Open Threshold##gate", &openTh, -80.0f, 0.0f, "%.1f dBFS")) {
-                    // Enforce gap: push close down if needed
+                // Commit on release, not per-frame: a drag fires the callback
+                // every frame, which used to spam ~100 blocking HTTP posts and
+                // config.json rewrites per adjustment.
+                ImGui::SliderFloat("Open Threshold##gate", &openTh, -80.0f, 0.0f, "%.1f dBFS");
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    if (openTh < -77.0f) openTh = -77.0f;  // keep close >= -80 after the gap push
                     if (openTh < closeTh + 3.0f) closeTh = openTh - 3.0f;
                     nlohmann::json body = {{"dsp", {{"noise_gate", {
                         {"open_threshold_dbfs", openTh},
@@ -1408,9 +1470,13 @@ void DictationApp::Render()
                     }}}}};
                     m_engine.PostDSPConfig(body.dump());
                 }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Audio louder than this opens the gate (mic \"turns on\").\n"
+                                      "Set between your room noise and speech level.");
 
-                if (ImGui::SliderFloat("Close Threshold##gate", &closeTh, -80.0f, 0.0f, "%.1f dBFS")) {
-                    // Enforce gap: push open up if needed
+                ImGui::SliderFloat("Close Threshold##gate", &closeTh, -80.0f, 0.0f, "%.1f dBFS");
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    if (closeTh > -3.0f) closeTh = -3.0f;  // keep open <= 0 after the gap push
                     if (closeTh > openTh - 3.0f) openTh = closeTh + 3.0f;
                     nlohmann::json body = {{"dsp", {{"noise_gate", {
                         {"open_threshold_dbfs", openTh},
@@ -1418,11 +1484,19 @@ void DictationApp::Render()
                     }}}}};
                     m_engine.PostDSPConfig(body.dump());
                 }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Audio quieter than this closes the gate again.\n"
+                                      "Kept at least 3 dB below Open so the gate doesn't flutter.");
 
-                if (ImGui::SliderFloat("Floor##gate", &floorDb, -80.0f, 0.0f, "%.1f dB")) {
+                ImGui::SliderFloat("Floor##gate", &floorDb, -80.0f, 0.0f, "%.1f dB");
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
                     nlohmann::json body = {{"dsp", {{"noise_gate", {{"floor_db", floorDb}}}}}};
                     m_engine.PostDSPConfig(body.dump());
                 }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("How much the closed gate turns the mic DOWN (not a threshold).\n"
+                                      "-80 dB = fully muted, 0 dB = gate does nothing. Default -25 dB\n"
+                                      "keeps a little room tone so it sounds natural.");
 
                 ImGui::PopItemWidth();
                 if (m_dspLocked) ImGui::EndDisabled();
@@ -1431,14 +1505,23 @@ void DictationApp::Render()
                 // reading prompt can take seconds; fetch it off-thread and show
                 // the fallback sentence until it arrives.
                 if (ImGui::Button("Auto Calibrate", ImVec2(140, 22))) {
+                    // Calibration reads a sentence aloud — stop dictation so it
+                    // doesn't get transcribed and typed into the focused window
+                    if (status.recording)
+                        m_engine.Stop();
                     m_showCalPopup = true;
-                    m_calPhase = 0;
                     m_calError.clear();
                     m_calPrompt = kCalFallbackPrompt;
                     m_calPromptFuture = std::async(std::launch::async,
                         [this] { return m_engine.FetchCalibrationPrompt(); });
-                    m_engine.StartCalibration();
-                    m_calStartTime = ImGui::GetTime();
+                    if (m_engine.StartCalibration()) {
+                        m_calPhase = 0;
+                        m_calStartTime = ImGui::GetTime();
+                    } else {
+                        m_calPhase = -1;
+                        m_calError = "Could not start calibration — check that the engine "
+                                     "is connected and the noise gate is enabled.";
+                    }
                 }
                 if (status.gate.calibrated_noise_floor_dbfs > -79.0f) {
                     ImGui::SameLine();
@@ -1466,6 +1549,10 @@ void DictationApp::Render()
                 m_engine.PostDSPConfig(body.dump());
             }
             ImGui::PopStyleColor(3);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Compressor: evens out loud and quiet speech.\n"
+                                  "Whisper usually doesn't need it — leave OFF unless\n"
+                                  "your voice level varies a lot.");
 
             ImGui::SameLine();
 
@@ -1487,6 +1574,9 @@ void DictationApp::Render()
                                       IM_COL32(220, 140, 30, 200));
                 }
                 ImGui::Dummy(ImVec2(grWidth, grHeight));
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Gain reduction — how much the compressor is\n"
+                                      "currently turning the signal down.");
                 ImGui::SameLine();
                 ImGui::Text("%.1f dB", m_smoothGR);
             }
@@ -1499,18 +1589,28 @@ void DictationApp::Render()
                 float compRatio = status.compressor.ratio;
                 float compMakeup = status.compressor.makeup_gain_db;
 
-                if (ImGui::SliderFloat("Threshold##comp", &compTh, -60.0f, 0.0f, "%.1f dBFS")) {
+                ImGui::SliderFloat("Threshold##comp", &compTh, -60.0f, 0.0f, "%.1f dBFS");
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
                     nlohmann::json body = {{"dsp", {{"compressor", {{"threshold_dbfs", compTh}}}}}};
                     m_engine.PostDSPConfig(body.dump());
                 }
-                if (ImGui::SliderFloat("Ratio##comp", &compRatio, 1.0f, 20.0f, "%.1f:1")) {
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Compression kicks in when your voice is louder than this.");
+                ImGui::SliderFloat("Ratio##comp", &compRatio, 1.0f, 20.0f, "%.1f:1");
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
                     nlohmann::json body = {{"dsp", {{"compressor", {{"ratio", compRatio}}}}}};
                     m_engine.PostDSPConfig(body.dump());
                 }
-                if (ImGui::SliderFloat("Makeup##comp", &compMakeup, 0.0f, 24.0f, "%.1f dB")) {
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("How strongly loud parts are squashed. 2:1 is gentle, 10:1 is heavy.");
+                ImGui::SliderFloat("Makeup##comp", &compMakeup, 0.0f, 24.0f, "%.1f dB");
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
                     nlohmann::json body = {{"dsp", {{"compressor", {{"makeup_gain_db", compMakeup}}}}}};
                     m_engine.PostDSPConfig(body.dump());
                 }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Volume added back after compression. Too much can clip —\n"
+                                      "watch for CLIP in the spectrum (output is safety-limited).");
 
                 ImGui::PopItemWidth();
                 if (m_dspLocked) ImGui::EndDisabled();
@@ -1571,47 +1671,69 @@ void DictationApp::Render()
 
         ImGui::SameLine(0, 6);
 
+        // Record source: what the WAV captures (was engine-only, no UI)
+        if (!wavActive) {
+            const char* srcItems[] = { "Post-DSP", "Pre-DSP" };
+            ImGui::SetNextItemWidth(95);
+            ImGui::Combo("##RecSource", &m_recordSourceIdx, srcItems, 2);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Post-DSP: what Whisper hears (gated/compressed).\n"
+                                  "Pre-DSP: the raw mic signal.");
+            ImGui::SameLine(0, 6);
+        }
+
         // Audio to Text button
         ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.35f, 0.55f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.45f, 0.65f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.25f, 0.45f, 1.0f));
-        bool a2tDisabled = status.file_transcription.active || status.model_loading;
-        if (a2tDisabled) ImGui::BeginDisabled();
-        if (ImGui::Button("Audio to Text", ImVec2(120, 25))) {
-            wchar_t szFile[MAX_PATH] = {};
-            OPENFILENAMEW ofn = {};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.lpstrFilter = L"Audio Files\0*.wav;*.mp3;*.flac;*.m4a;*.ogg\0All Files\0*.*\0";
-            ofn.lpstrFile = szFile;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-            std::wstring initDir = Utf8ToWide(status.recordings_dir);
-            if (!initDir.empty()) {
-                ofn.lpstrInitialDir = initDir.c_str();
-            }
-            if (GetOpenFileNameW(&ofn)) {
-                int len = WideCharToMultiByte(CP_UTF8, 0, szFile, -1, nullptr, 0, nullptr, nullptr);
-                if (len <= 0) len = 1;  // conversion failure → empty path, not SIZE_MAX alloc
-                std::string path(len - 1, '\0');
-                WideCharToMultiByte(CP_UTF8, 0, szFile, -1, path.data(), len, nullptr, nullptr);
-                std::string a2tError;
-                bool ok = m_engine.TranscribeFile(path, a2tError);
+        if (status.file_transcription.active) {
+            // Job running: button becomes a way back to the (hideable) popup
+            char vpLabel[48];
+            snprintf(vpLabel, sizeof(vpLabel), "Progress %.0f%%##a2t", status.file_transcription.progress);
+            if (ImGui::Button(vpLabel, ImVec2(120, 25))) {
                 m_showTranscriptionPopup = true;
-                m_lastTranscriptStatus.clear();
-                if (!ok) {
-                    m_lastTranscriptStatus = "Error: " + a2tError;
+            }
+            ImGui::PopStyleColor(3);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Transcription in progress — click to view");
+        } else {
+            bool a2tDisabled = status.model_loading;
+            if (a2tDisabled) ImGui::BeginDisabled();
+            if (ImGui::Button("Audio to Text", ImVec2(120, 25))) {
+                wchar_t szFile[MAX_PATH] = {};
+                OPENFILENAMEW ofn = {};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.lpstrFilter = L"Audio Files\0*.wav;*.mp3;*.flac;*.m4a;*.ogg\0All Files\0*.*\0";
+                ofn.lpstrFile = szFile;
+                ofn.nMaxFile = MAX_PATH;
+                // NOCHANGEDIR: the dialog must not change our process CWD
+                ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+                std::wstring initDir = Utf8ToWide(status.recordings_dir);
+                if (!initDir.empty()) {
+                    ofn.lpstrInitialDir = initDir.c_str();
+                }
+                if (GetOpenFileNameW(&ofn)) {
+                    int len = WideCharToMultiByte(CP_UTF8, 0, szFile, -1, nullptr, 0, nullptr, nullptr);
+                    if (len <= 0) len = 1;  // conversion failure → empty path, not SIZE_MAX alloc
+                    std::string path(len - 1, '\0');
+                    WideCharToMultiByte(CP_UTF8, 0, szFile, -1, path.data(), len, nullptr, nullptr);
+                    std::string a2tError;
+                    bool ok = m_engine.TranscribeFile(path, a2tError);
+                    m_showTranscriptionPopup = true;
+                    m_lastTranscriptStatus.clear();
+                    if (!ok) {
+                        m_lastTranscriptStatus = "Error: " + a2tError;
+                    }
                 }
             }
-        }
-        if (a2tDisabled) ImGui::EndDisabled();
-        ImGui::PopStyleColor(3);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-            if (status.model_loading)
-                ImGui::SetTooltip("Wait for Whisper model to load");
-            else if (status.file_transcription.active)
-                ImGui::SetTooltip("Transcription in progress...");
-            else
-                ImGui::SetTooltip("Transcribe an audio file to text (WAV, MP3, FLAC)");
+            if (a2tDisabled) ImGui::EndDisabled();
+            ImGui::PopStyleColor(3);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                if (status.model_loading)
+                    ImGui::SetTooltip("Wait for Whisper model to load");
+                else
+                    ImGui::SetTooltip("Transcribe an audio file to text (WAV, MP3, FLAC)");
+            }
         }
 
         ImGui::SameLine(0, 6);
@@ -1627,6 +1749,24 @@ void DictationApp::Render()
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Open recordings folder");
 
+        // MP3 export for the last finished recording (was engine-only, no UI)
+        if (!wavActive && !status.last_recording_path.empty()) {
+            ImGui::SameLine(0, 6);
+            bool noFfmpeg = !status.ffmpeg_available;
+            if (noFfmpeg) ImGui::BeginDisabled();
+            if (ImGui::Button("MP3", ImVec2(45, 25))) {
+                std::string wavPath = status.last_recording_path;
+                std::thread([this, wavPath] { m_engine.ExportMP3(wavPath); }).detach();
+            }
+            if (noFfmpeg) ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                if (noFfmpeg)
+                    ImGui::SetTooltip("Requires ffmpeg on PATH");
+                else
+                    ImGui::SetTooltip("Convert the last recording to MP3 (saved next to the WAV)");
+            }
+        }
+
         // Timer inline when WAV recording is active
         if (wavActive) {
             ImGui::SameLine(0, 8);
@@ -1634,6 +1774,13 @@ void DictationApp::Render()
             char timer[16];
             snprintf(timer, sizeof(timer), "%02d:%02d", secs / 60, secs % 60);
             ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", timer);
+        }
+
+        // Recorder failure (disk full, folder removed) — the engine stops the
+        // recording and reports why
+        if (!status.wav_recording.error.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                               "Recording failed: %s", status.wav_recording.error.c_str());
         }
 
     // --- System audio (loopback) "conversation mode" ---
@@ -1682,18 +1829,27 @@ void DictationApp::Render()
             ImGui::EndCombo();
         }
 
-        // Conversation-log indicator
+        // Conversation-log indicator — be honest: text only lands in the log
+        // while dictation is actually running
         if (status.conversation_log_active) {
             ImGui::SameLine(0, 12);
-            ImGui::TextColored(ImVec4(0.6f, 0.85f, 0.6f, 1.0f), "logging");
+            if (status.recording) {
+                ImGui::TextColored(ImVec4(0.6f, 0.85f, 0.6f, 1.0f), "logging");
+            } else {
+                std::string hk = status.hotkey.empty() ? "F1" : status.hotkey;
+                for (auto& c : hk) c = (char)toupper((unsigned char)c);
+                ImGui::TextColored(ImVec4(0.85f, 0.75f, 0.4f, 1.0f),
+                                   "log armed  (press %s to capture)", hk.c_str());
+            }
             if (ImGui::IsItemHovered() && !status.conversation_log_path.empty())
-                ImGui::SetTooltip("%s", status.conversation_log_path.c_str());
+                ImGui::SetTooltip("Conversation log: %s\nText is written while dictation is active.",
+                                  status.conversation_log_path.c_str());
         }
     }
     }
 
-    // --- Diagnostics ---
-    if (ImGui::CollapsingHeader("Diagnostics")) {
+    // --- Diagnostics (open by default — latency is core feedback) ---
+    if (ImGui::CollapsingHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
     // --- Latency ---
     float gen_ms = status.latency.transcribe_ms + status.latency.cleanup_ms
                  + status.latency.type_ms;

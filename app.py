@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import logging
+import re
 import logging.handlers
 import shutil
 import subprocess
@@ -58,7 +59,8 @@ def _known_kwargs(cls, cfg: dict) -> dict:
     params = inspect.signature(cls.__init__).parameters
     known = {k: v for k, v in cfg.items() if k in params}
     for k in cfg.keys() - known.keys():
-        logger.warning("[dsp] Ignoring unknown %s parameter: %r", cls.__name__, k)
+        if not k.startswith("calibrated_"):  # persisted results, applied separately
+            logger.warning("[dsp] Ignoring unknown %s parameter: %r", cls.__name__, k)
     return known
 
 
@@ -105,11 +107,22 @@ class DictationApp:
                          **_known_kwargs(NoiseGate, dsp_cfg.get("noise_gate", {})))
         compressor = Compressor(sample_rate=RECORD_RATE,
                                 **_known_kwargs(Compressor, dsp_cfg.get("compressor", {})))
+        # Restore persisted calibration results (not ctor params) so the
+        # "Noise floor: X dBFS" hint survives restarts
+        for cal_key in ("calibrated_noise_floor_dbfs", "calibrated_speech_dbfs"):
+            if cal_key in dsp_cfg.get("noise_gate", {}):
+                try:
+                    gate.configure(**{cal_key: dsp_cfg["noise_gate"][cal_key]})
+                except Exception:
+                    pass
         self.dsp_chain = DSPChain(gate, compressor)
 
         mic_index = self._resolve_mic_device()
         queue_maxsize = self.config.cfg.get("audio_queue_maxsize", 500)
         self.audio = AudioCaptureService(mic_index, dsp_chain=self.dsp_chain, queue_maxsize=queue_maxsize)
+        # Restore spectrum source (pre/post DSP) from last session
+        if self.config.cfg.get("spectrum_source") == "pre":
+            self.audio.set_spectrum_source(True)
         model_dir = os.path.join(self.config.project_dir, "models")
 
         # Hardware-aware model selection: with whisper_model_auto on (the
@@ -1017,25 +1030,38 @@ class DictationApp:
         When ON, also starts a conversation transcript-log session (if enabled).
         """
         enabled = bool(enabled)
-        with self._state_lock:
-            if enabled:
+        if enabled:
+            # Resolve the device under the lock, but open the stream OUTSIDE
+            # it — enable_loopback takes seconds and /status needs this lock,
+            # so holding it here froze the whole UI during the toggle.
+            with self._state_lock:
                 index = self.audio.loopback_device_index
                 if index is None:
                     index = self._resolve_loopback_device()
-                if index is None:
-                    logger.warning("  [system_audio] no loopback device selected — pick one first")
-                    self.system_audio_enabled = False
-                    if hasattr(self, "tray"):
-                        self.tray.set_system_audio(False)
-                    return
-                ok = self.audio.enable_loopback(index)
+            if index is None:
+                logger.warning("  [system_audio] no loopback device selected — pick one first")
+                self.engine_state.last_error = "System audio: pick a loopback source first"
+                self.system_audio_enabled = False
+                if hasattr(self, "tray"):
+                    self.tray.set_system_audio(False)
+                return
+            ok = self.audio.enable_loopback(index)
+            with self._state_lock:
                 self.system_audio_enabled = ok
                 if ok and self.conversation_log:
                     self.transcript.start_session()
+            if ok:
+                self.engine_state.last_error = ""
             else:
-                self.audio.disable_loopback()
+                # Surface the failure — a button that flickers back OFF with
+                # no explanation reads as "broken app"
+                self.engine_state.last_error = ("System audio: could not open the loopback "
+                                                "device (in use by another app, or unplugged?)")
+        else:
+            self.audio.disable_loopback()
+            with self._state_lock:
                 self.system_audio_enabled = False
-                self.transcript.stop_session()
+            self.transcript.stop_session()
         self._persist_config_keys({"system_audio_enabled": self.system_audio_enabled})
         if hasattr(self, "tray"):
             self.tray.set_system_audio(self.system_audio_enabled)
@@ -1067,55 +1093,53 @@ class DictationApp:
         logger.info("  [loopback] Source set to device %d (%s)", new_index, name)
 
     def _persist_config_keys(self, updates: dict):
-        """Merge a few keys into config.json (preserves the rest)."""
-        config_path = os.path.join(self.config.project_dir, "config.json")
-        try:
-            cfg = {}
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-            cfg.update(updates)
-            self.config.cfg.update(updates)
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2, ensure_ascii=False)
-                f.write("\n")
-        except Exception as e:
-            logger.warning("Failed to persist config keys %s: %s", list(updates), e)
+        """Merge a few keys into config.json and the live config."""
+        self.config.cfg.update(updates)
+        self._save_config_keys(updates)
 
     # --- DSP config persistence ---
 
+    def _write_config_atomic(self, cfg: dict):
+        """Write config.json via temp file + rename so a crash mid-write can
+        never leave a truncated, unparseable config."""
+        config_path = os.path.join(self.config.project_dir, "config.json")
+        tmp_path = config_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp_path, config_path)
+
+    def _read_config_file(self) -> dict:
+        config_path = os.path.join(self.config.project_dir, "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+
     def _save_dsp_config(self):
         """Persist current DSP settings to config.json."""
-        config_path = os.path.join(self.config.project_dir, "config.json")
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
+            cfg = self._read_config_file()
             cfg["dsp"] = {
                 "noise_gate": {k: v for k, v in self.dsp_chain.gate.get_state().items()
                               if k in ("enabled", "open_threshold_dbfs", "close_threshold_dbfs",
-                                       "floor_db", "hold_ms", "attack_ms", "release_ms")},
+                                       "floor_db", "hold_ms", "attack_ms", "release_ms",
+                                       "cal_speech_margin_db",
+                                       "calibrated_noise_floor_dbfs", "calibrated_speech_dbfs")},
                 "compressor": {k: v for k, v in self.dsp_chain.compressor.get_state().items()
                               if k in ("enabled", "threshold_dbfs", "ratio",
                                        "attack_ms", "release_ms", "makeup_gain_db")},
             }
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2, ensure_ascii=False)
-                f.write("\n")
+            self._write_config_atomic(cfg)
         except Exception as e:
             logger.warning("Failed to save DSP config: %s", e)
 
     def _save_config_keys(self, updates: dict):
         """Persist selected top-level keys to config.json."""
-        config_path = os.path.join(self.config.project_dir, "config.json")
         try:
-            cfg = {}
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
+            cfg = self._read_config_file()
             cfg.update(updates)
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2, ensure_ascii=False)
-                f.write("\n")
+            self._write_config_atomic(cfg)
         except Exception as e:
             logger.warning("Failed to save config keys %s: %s", list(updates), e)
 
@@ -1126,6 +1150,9 @@ class DictationApp:
         transcription resumes when the new model is ready."""
         if self._model_loading:
             logger.warning("[model] Ignoring switch to %s — a model is already loading", model_name)
+            return False
+        if self._file_transcription.get("active"):
+            logger.warning("[model] Ignoring switch to %s — file transcription in progress", model_name)
             return False
         if model_name == self.transcriber.model_size:
             return True
@@ -1444,6 +1471,15 @@ class DictationApp:
             return {"ok": True}
         return {"ok": False, "error": "Nothing to reset"}
 
+    @staticmethod
+    def _sanitize_filename(name: str) -> str:
+        """Make a user-supplied name safe as a Windows filename: strip
+        path separators/traversal and characters Windows rejects."""
+        name = os.path.basename(name.strip())  # drop any directory components
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
+        name = name.strip(". ")  # trailing dots/spaces are invalid on Windows
+        return name or "transcript"
+
     def _save_worker(self, fmt: str, style: str, filename: str = ""):
         """Background worker that formats and saves the transcription."""
         ft = self._file_transcription
@@ -1455,20 +1491,30 @@ class DictationApp:
             )
             os.makedirs(transcripts_dir, exist_ok=True)
 
-            base_name = filename.strip() if filename.strip() else os.path.splitext(os.path.basename(ft["input_path"]))[0]
+            raw_name = filename.strip() or os.path.splitext(os.path.basename(ft["input_path"]))[0]
+            base_name = self._sanitize_filename(raw_name)
             output_path = os.path.join(transcripts_dir, f"{base_name}.{ext}")
+            # Never silently overwrite an existing transcript
+            n = 2
+            while os.path.exists(output_path):
+                output_path = os.path.join(transcripts_dir, f"{base_name} ({n}).{ext}")
+                n += 1
 
             content = self._format_transcription(ft["text"], base_name, style, ext)
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
             ft["output_path"] = output_path
+            ft["save_error"] = ""
             ft["status"] = "done"
             logger.info("[a2t] Saved → %s (%d chars, style=%s)", output_path, len(content), style)
         except Exception as e:
+            # A failed SAVE must not destroy the completed TRANSCRIPTION —
+            # go back to "done" so the user can retry with a different name
             logger.error("[a2t] Save failed: %s", e)
-            ft["status"] = "error"
-            ft["error"] = str(e)
+            ft["save_error"] = str(e)
+            ft["output_path"] = ""
+            ft["status"] = "done"
 
     # --- Lifecycle ---
 

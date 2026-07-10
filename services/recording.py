@@ -32,6 +32,7 @@ class WavRecorder:
         self._samples_written = 0
         self._dropped_frames = 0
         self._current_path: str | None = None
+        self._error: str = ""
 
     # --- Public API ---
 
@@ -51,6 +52,7 @@ class WavRecorder:
         self._current_path = path
         self._samples_written = 0
         self._dropped_frames = 0
+        self._error = ""
 
         # Drain any stale data
         while not self._queue.empty():
@@ -123,6 +125,10 @@ class WavRecorder:
     def current_path(self) -> str | None:
         return self._current_path
 
+    @property
+    def error(self) -> str:
+        return self._error
+
     # --- Writer thread ---
 
     def _writer_loop(self):
@@ -146,7 +152,11 @@ class WavRecorder:
                 self._wav_file.writeframes(raw)
                 self._samples_written += len(pcm)
             except Exception as e:
+                # Disk full / folder deleted: stop cleanly instead of showing
+                # a frozen REC timer forever while silently writing nothing
                 logger.error("[rec] Write error: %s", e)
+                self._error = str(e)
+                self._is_recording = False
                 break
 
         # Drain remaining

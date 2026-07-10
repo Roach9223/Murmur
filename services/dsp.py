@@ -196,6 +196,17 @@ class NoiseGate:
         self._input_dbfs = -80.0
         self._output_dbfs = -80.0
 
+    def update_meter(self, block: np.ndarray):
+        """Keep input/output meters live while the gate is bypassed — the UI's
+        VU meter reads these and would otherwise freeze at the last value."""
+        n = len(block)
+        if n == 0:
+            return
+        rms = math.sqrt(float(np.dot(block, block)) / n)
+        dbfs = 20.0 * math.log10(max(rms, 1e-10))
+        self._input_dbfs = dbfs
+        self._output_dbfs = dbfs
+
     def configure(self, **kwargs):
         """Update parameters at runtime. Raises ValueError on invalid params."""
         # Check cross-parameter constraints with merged values
@@ -210,9 +221,17 @@ class NoiseGate:
         if errors:
             raise ValueError("; ".join(errors))
 
+        # Whitelist — setattr-by-name on arbitrary keys would let API callers
+        # overwrite internal state (_current_gain, sample_rate, ...)
+        allowed = ("enabled", "open_threshold_dbfs", "close_threshold_dbfs",
+                   "floor_db", "hold_ms", "attack_ms", "release_ms",
+                   "cal_speech_margin_db",
+                   "calibrated_noise_floor_dbfs", "calibrated_speech_dbfs")
+        for k in kwargs:
+            if k not in allowed:
+                raise ValueError(f"unknown noise_gate parameter: {k}")
         for k, v in kwargs.items():
-            if hasattr(self, k):
-                setattr(self, k, v)
+            setattr(self, k, v)
 
         self._floor_lin = 10.0 ** (self.floor_db / 20.0)
         self._hold_samples = int(self.hold_ms * self.sample_rate / 1000.0)
@@ -256,26 +275,29 @@ class NoiseGate:
         self._speech_calibrating = False
         noise_dbfs = self.calibrated_noise_floor_dbfs
 
-        if self._speech_cal_rms_values:
-            rms_array = np.array(self._speech_cal_rms_values)
-            # Use 75th percentile of speech samples (captures typical speech level)
-            speech_rms = float(np.percentile(rms_array, 75))
-            speech_dbfs = 20.0 * math.log10(max(speech_rms, 1e-10))
-            self.calibrated_speech_dbfs = round(speech_dbfs, 1)
-        else:
-            speech_dbfs = noise_dbfs + 20.0  # fallback
-            self.calibrated_speech_dbfs = round(speech_dbfs, 1)
+        if not self._speech_cal_rms_values:
+            return None
+
+        rms_array = np.array(self._speech_cal_rms_values)
+        # Use 75th percentile of speech samples (captures typical speech level)
+        speech_rms = float(np.percentile(rms_array, 75))
+        speech_dbfs = 20.0 * math.log10(max(speech_rms, 1e-10))
 
         self._speech_cal_rms_values = []
+
+        # If the "speech" level is barely above the measured noise floor, the
+        # user didn't actually speak (the mic always captures room noise, so
+        # the buffer is never empty). Refuse rather than compute thresholds
+        # that open the gate on chair squeaks.
+        gap = speech_dbfs - noise_dbfs
+        if gap < 8.0:
+            return None
+        self.calibrated_speech_dbfs = round(speech_dbfs, 1)
 
         # Compute thresholds using both measurements
         close_threshold = noise_dbfs + 6.0
         # Place open threshold 30% of the way from noise to speech
-        gap = speech_dbfs - noise_dbfs
-        if gap > 8.0:
-            open_threshold = noise_dbfs + gap * 0.3
-        else:
-            open_threshold = close_threshold + 4.0  # fallback if gap too small
+        open_threshold = noise_dbfs + gap * 0.3
 
         # Ensure minimum hysteresis
         if open_threshold < close_threshold + 3.0:
@@ -310,6 +332,7 @@ class NoiseGate:
             "release_ms": self.release_ms,
             "calibrating": self._calibrating,
             "speech_calibrating": self._speech_calibrating,
+            "cal_speech_margin_db": self.cal_speech_margin_db,
             "calibrated_noise_floor_dbfs": self.calibrated_noise_floor_dbfs,
             "calibrated_speech_dbfs": self.calibrated_speech_dbfs,
         }
@@ -395,9 +418,13 @@ class Compressor:
         if errors:
             raise ValueError("; ".join(errors))
 
+        allowed = ("enabled", "threshold_dbfs", "ratio",
+                   "attack_ms", "release_ms", "makeup_gain_db")
+        for k in kwargs:
+            if k not in allowed:
+                raise ValueError(f"unknown compressor parameter: {k}")
         for k, v in kwargs.items():
-            if hasattr(self, k):
-                setattr(self, k, v)
+            setattr(self, k, v)
 
         self._makeup_lin = 10.0 ** (self.makeup_gain_db / 20.0)
         self._recompute_coefficients()
@@ -433,8 +460,13 @@ class DSPChain:
 
         if self.gate.enabled:
             self.gate.process_inplace(block, out)
+        else:
+            self.gate.update_meter(out)
         if self.compressor.enabled:
             self.compressor.process_inplace(out)
+            # Makeup gain can push past full scale — clamp before the WAV
+            # recorder / Whisper see wrapped samples
+            np.clip(out, -1.0, 1.0, out=out)
 
         return out
 

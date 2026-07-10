@@ -112,6 +112,7 @@ struct EngineStatus {
         float seconds = 0.0f;
         int dropped_frames = 0;
         std::string source = "post";
+        std::string error;
     } wav_recording;
     bool ffmpeg_available = false;
     std::string recordings_dir;
@@ -127,7 +128,8 @@ struct EngineStatus {
         std::string input_path;
         std::string output_path;
         std::string error;
-        float progress = 0.0f;  // 0-100
+        std::string save_error;   // save failed but transcription is intact
+        float progress = 0.0f;    // 0-100
     } file_transcription;
     std::string transcripts_dir;
 };

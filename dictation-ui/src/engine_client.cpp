@@ -202,6 +202,7 @@ bool EngineClient::PollStatus() {
                 m_status.wav_recording.seconds = wr.value("seconds", 0.0f);
                 m_status.wav_recording.dropped_frames = wr.value("dropped_frames", 0);
                 m_status.wav_recording.source = wr.value("source", std::string{"post"});
+                m_status.wav_recording.error = wr.value("error", std::string{});
             }
             m_status.ffmpeg_available = j.value("ffmpeg_available", false);
             m_status.recordings_dir = j.value("recordings_dir", std::string{});
@@ -216,6 +217,7 @@ bool EngineClient::PollStatus() {
                 m_status.file_transcription.input_path = ft.value("input_path", std::string{});
                 m_status.file_transcription.output_path = ft.value("output_path", std::string{});
                 m_status.file_transcription.error = ft.value("error", std::string{});
+                m_status.file_transcription.save_error = ft.value("save_error", std::string{});
                 m_status.file_transcription.progress = ft.value("progress", 0.0f);
             }
             m_status.transcripts_dir = j.value("transcripts_dir", std::string{});

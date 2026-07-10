@@ -82,4 +82,7 @@ private:
     // Async fetches — slow HTTP must never run on the render thread
     std::future<std::string> m_calPromptFuture;
     std::future<std::vector<std::string>> m_logTailFuture;
+    std::future<bool> m_calFinishFuture;   // calibration finish calls (5s timeouts)
+
+    bool m_wasFtActive = false;  // edge-detect new transcription jobs for popup auto-open
 };

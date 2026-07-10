@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 
 
 # --- Request models ---
@@ -315,7 +315,8 @@ def create_app(engine) -> FastAPI:
         elif req.action == "finish":
             result = chain.gate.finish_calibration()
             if result is None:
-                raise HTTPException(400, "Calibration failed (no data)")
+                raise HTTPException(400, "No speech detected — read the sentence "
+                                          "aloud during step 2 and try again")
             try:
                 chain.gate.configure(
                     open_threshold_dbfs=result["open_threshold_dbfs"],
@@ -392,6 +393,8 @@ def create_app(engine) -> FastAPI:
         logger.info("[a2t] file exists=%s, active=%s", os.path.isfile(req.path), engine._file_transcription["active"])
         if engine._file_transcription["active"]:
             raise HTTPException(409, "Already transcribing a file")
+        if getattr(engine, "_model_loading", False):
+            raise HTTPException(409, "Whisper model is still loading — try again shortly")
         if not os.path.isfile(req.path):
             raise HTTPException(400, f"File not found: {req.path}")
         engine.transcribe_audio_file(req.path)
@@ -514,9 +517,10 @@ def create_app(engine) -> FastAPI:
                     raise HTTPException(400, str(e))
             engine.config.cfg.setdefault("vad", {}).update(vad_updates)
 
-        # Spectrum source toggle
+        # Spectrum source toggle (persisted so it survives restart)
         if "spectrum_source" in body:
             engine.audio.set_spectrum_source(body["spectrum_source"] == "pre")
+            engine._save_config_keys({"spectrum_source": body["spectrum_source"]})
 
         return {"ok": True}
 
