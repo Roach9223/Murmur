@@ -16,6 +16,7 @@ add_executable(${PROJECT_NAME}
     src/app.cpp
     src/engine_client.cpp
     src/engine_process.cpp
+    src/updater.cpp
     src/dx11_helpers.cpp
     src/murmur.rc
 )
@@ -28,9 +29,22 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     d3d11.lib
     dxgi.lib
     d3dcompiler.lib
+    winhttp.lib
+    dwmapi.lib
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE src)
 
 # Hide console window, keep standard main()
 target_link_options(${PROJECT_NAME} PRIVATE "/SUBSYSTEM:WINDOWS" "/ENTRY:mainCRTStartup")
+
+# --- Updater test harness (console; not shipped) ---
+add_executable(updater_test
+    src/updater_test.cpp
+    src/updater.cpp
+)
+target_link_libraries(updater_test PRIVATE
+    nlohmann_json::nlohmann_json
+    winhttp.lib
+)
+target_include_directories(updater_test PRIVATE src)

@@ -2,8 +2,10 @@
 
 #include "engine_client.h"
 #include "engine_process.h"
+#include "updater.h"
 
 #include <future>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -85,4 +87,8 @@ private:
     std::future<bool> m_calFinishFuture;   // calibration finish calls (5s timeouts)
 
     bool m_wasFtActive = false;  // edge-detect new transcription jobs for popup auto-open
+
+    // Self-update
+    std::unique_ptr<Updater> m_updater;
+    bool m_showUpdatePopup = false;
 };

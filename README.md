@@ -104,6 +104,8 @@ These settings are tuned for dictation workloads — short inputs, fast response
 
 The UI launches the Python engine automatically in the background. The first run downloads the Whisper model (~1.5GB) into the `models/` folder, which may take a few minutes — the banner shows "loading" until it's ready.
 
+**Updates are one click**: when a new version is released, an "Update to vX.Y.Z" button appears in the menu bar — click it, hit Download & Install, and Murmur updates and restarts itself (your settings, models, and recordings are kept). Most updates are a ~25MB download, not the full package. You can also check manually via **Help → Check for Updates**.
+
 > [!NOTE]
 > **Windows SmartScreen**: the release is not code-signed, so the first launch shows "Windows protected your PC." Click **More info → Run anyway**. Some antivirus tools may also flag the keyboard hook Murmur uses to type for you — that's the app's core feature, not malware; add an exclusion if needed.
 >

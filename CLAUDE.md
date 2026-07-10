@@ -300,6 +300,12 @@ Murmur/Murmur.exe
 - Python 3.11+ with venv activated (for source; Murmur.exe bundles everything)
 - NVIDIA GPU with CUDA recommended; transcriber falls back to CPU int8 if CUDA init fails
 
+**Releasing a new version — checklist:**
+1. Bump `VERSION` in `services/server.py` AND `kMurmurVersion` in `dictation-ui/src/app.cpp` (they must match; the UI updater compares its constant against GitHub)
+2. `build.bat --release` produces BOTH `Murmur-release.zip` (full) and `Murmur-update.zip` (slim: exes + services + prompts + runtime DLLs)
+3. Attach `Murmur-update.zip` to the GitHub release ONLY if Python/C++ dependencies are unchanged since the previous release — the in-app updater prefers it and falls back to the full zip when absent
+4. The in-app updater (dictation-ui/src/updater.cpp) checks `releases/latest` via WinHTTP, stages to `<install>\update\staging`, and applies via a generated `apply.cmd` that excludes config.json
+
 **Release packaging (`build.bat --release`):**
 - Stages a clean folder (no logs/Recordings/Transcriptions/models/dev config) and zips it to `Murmur-release.zip`
 - Ships `config.release.json` as `config.json` (Raw mode default, stock DSP values, mic index 0)

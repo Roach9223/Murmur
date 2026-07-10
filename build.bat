@@ -149,4 +149,25 @@ if %MAKE_RELEASE%==1 (
     )
     for %%F in ("%PROJECT_DIR%Murmur-release.zip") do echo Release zip: %%F  [%%~zF bytes]
     echo NOTE: GitHub release assets are limited to 2 GB each.
+
+    :: Slim update package for the in-app updater: only what changes between
+    :: releases (exes, python services, prompts, runtime DLLs) — NOT the CUDA
+    :: DLLs, python runtime, or models. Attach Murmur-update.zip to a release
+    :: ONLY when dependencies are unchanged; the updater prefers it and falls
+    :: back to the full zip when absent.
+    echo Packaging slim update zip...
+    if exist "%RELEASE_STAGE%\update-pkg" rmdir /s /q "%RELEASE_STAGE%\update-pkg"
+    mkdir "%RELEASE_STAGE%\update-pkg\Murmur\engine\_internal"
+    copy /Y "%OUTPUT_DIR%\Murmur.exe" "%RELEASE_STAGE%\update-pkg\Murmur\" >NUL
+    copy /Y "%OUTPUT_DIR%\brotlicommon.dll" "%RELEASE_STAGE%\update-pkg\Murmur\" >NUL
+    copy /Y "%OUTPUT_DIR%\brotlidec.dll" "%RELEASE_STAGE%\update-pkg\Murmur\" >NUL
+    copy /Y "%OUTPUT_DIR%\msvcp140.dll" "%RELEASE_STAGE%\update-pkg\Murmur\" >NUL
+    copy /Y "%OUTPUT_DIR%\vcruntime140.dll" "%RELEASE_STAGE%\update-pkg\Murmur\" >NUL
+    copy /Y "%OUTPUT_DIR%\vcruntime140_1.dll" "%RELEASE_STAGE%\update-pkg\Murmur\" >NUL
+    copy /Y "%OUTPUT_DIR%\engine\murmur-engine.exe" "%RELEASE_STAGE%\update-pkg\Murmur\engine\" >NUL
+    xcopy "%OUTPUT_DIR%\engine\_internal\services" "%RELEASE_STAGE%\update-pkg\Murmur\engine\_internal\services\" /E /I /Q /Y >NUL
+    xcopy "%PROJECT_DIR%prompts\*" "%RELEASE_STAGE%\update-pkg\Murmur\prompts\" /I /Q /Y >NUL
+    if exist "%PROJECT_DIR%Murmur-update.zip" del "%PROJECT_DIR%Murmur-update.zip"
+    tar -a -c -f "%PROJECT_DIR%Murmur-update.zip" -C "%RELEASE_STAGE%\update-pkg" Murmur
+    for %%F in ("%PROJECT_DIR%Murmur-update.zip") do echo Update zip: %%F  [%%~zF bytes]
 )

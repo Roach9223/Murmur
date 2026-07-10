@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-VERSION = "1.2.3"
+VERSION = "1.2.4"
 
 
 # --- Request models ---

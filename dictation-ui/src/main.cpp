@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <d3d11.h>
+#include <dwmapi.h>
 
 #include "imgui.h"
 #include "imgui_impl_win32.h"
@@ -68,6 +69,13 @@ int main(int, char**)
         WS_OVERLAPPEDWINDOW,
         100, 100, 1100, 825,
         nullptr, nullptr, wc.hInstance, nullptr);
+
+    // Dark title bar to match the dark UI (no-op on pre-1809 Windows 10)
+    {
+        BOOL dark = TRUE;
+        DwmSetWindowAttribute(hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/,
+                              &dark, sizeof(dark));
+    }
 
     // Initialize DX11
     if (!DX11::CreateDevice(hwnd, &g_pd3dDevice, &g_pd3dDeviceContext,

@@ -32,6 +32,19 @@ static std::wstring Utf8ToWide(const std::string& s) {
 static const char* kCalFallbackPrompt =
     "The quick brown fox jumps over the lazy dog near the river bank.";
 
+// UI version — keep in lockstep with VERSION in services/server.py.
+// Used by the self-updater to compare against the latest GitHub release.
+static const char* kMurmurVersion = "1.2.4";
+
+static std::wstring ExeDirW()
+{
+    wchar_t exePath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::wstring p(exePath);
+    size_t slash = p.find_last_of(L"\\/");
+    return (slash == std::wstring::npos) ? std::wstring() : p.substr(0, slash);
+}
+
 // Slider that commits once, on release. The naive pattern (seed the value
 // from polled status + IsItemDeactivatedAfterEdit) commits a STALE value:
 // on the release frame ImGui no longer writes the dragged value into the
@@ -61,7 +74,12 @@ static bool SliderCommit(const char* label, float statusVal, float vmin, float v
 }
 
 DictationApp::DictationApp(EngineClient& engine, EngineProcess& process)
-    : m_engine(engine), m_process(process) {}
+    : m_engine(engine), m_process(process)
+{
+    // Updates apply to the directory Murmur.exe runs from
+    m_updater = std::make_unique<Updater>(kMurmurVersion, ExeDirW());
+    m_updater->CheckAsync();  // quiet startup check; UI only reacts if newer
+}
 
 void DictationApp::Render()
 {
@@ -253,6 +271,10 @@ void DictationApp::Render()
             if (ImGui::MenuItem("Instructions")) {
                 m_showInstructions = true;
             }
+            if (ImGui::MenuItem("Check for Updates...")) {
+                m_updater->CheckAsync();
+                m_showUpdatePopup = true;
+            }
             ImGui::Separator();
             if (ImGui::MenuItem("About")) {
                 m_showAbout = true;
@@ -260,7 +282,7 @@ void DictationApp::Render()
             ImGui::EndMenu();
         }
 
-        // Right-aligned engine status (dot + version)
+        // Right-aligned: optional update button + engine status (dot + version)
         {
             char engBuf[64];
             if (!status.connected)
@@ -270,6 +292,31 @@ void DictationApp::Render()
             else
                 snprintf(engBuf, sizeof(engBuf), "Engine v%s", status.version.c_str());
             float w = ImGui::CalcTextSize(engBuf).x + 26.0f;
+
+            // Update button appears only when there's something to act on
+            Updater::State us = m_updater->GetState();
+            char updBuf[64] = {};
+            if (us == Updater::State::UPDATE_AVAILABLE)
+                snprintf(updBuf, sizeof(updBuf), "Update to %s", m_updater->LatestVersion().c_str());
+            else if (us == Updater::State::DOWNLOADING)
+                snprintf(updBuf, sizeof(updBuf), "Downloading %.0f%%", m_updater->Progress() * 100.0f);
+            else if (us == Updater::State::EXTRACTING)
+                snprintf(updBuf, sizeof(updBuf), "Preparing update...");
+            else if (us == Updater::State::READY)
+                snprintf(updBuf, sizeof(updBuf), "Restart to update");
+            if (updBuf[0]) {
+                float updW = ImGui::CalcTextSize(updBuf).x + 18.0f;
+                ImGui::SetCursorPosX(ImGui::GetWindowWidth() - w - updW - 10.0f);
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.13f, 0.45f, 0.75f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.18f, 0.55f, 0.85f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.35f, 0.60f, 1.0f));
+                if (ImGui::SmallButton(updBuf)) {
+                    m_showUpdatePopup = true;
+                }
+                ImGui::PopStyleColor(3);
+                ImGui::SameLine(0, 10.0f);
+            }
+
             ImGui::SetCursorPosX(ImGui::GetWindowWidth() - w);
             ImVec4 dotCol = !status.connected      ? ImVec4(0.90f, 0.25f, 0.25f, 1.0f)
                           : status.model_loading   ? ImVec4(0.90f, 0.70f, 0.10f, 1.0f)
@@ -1836,6 +1883,96 @@ void DictationApp::Render()
     }
 
     ImGui::End();
+
+    // --- Software Update popup ---
+    if (m_showUpdatePopup) {
+        ImGui::OpenPopup("Software Update##modal");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(480, 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Software Update##modal", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        Updater::State us = m_updater->GetState();
+        switch (us) {
+        case Updater::State::CHECKING:
+            ImGui::Text("Checking for updates...");
+            break;
+        case Updater::State::UP_TO_DATE:
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f),
+                               "You're up to date (v%s).", kMurmurVersion);
+            break;
+        case Updater::State::UPDATE_AVAILABLE: {
+            ImGui::Text("Murmur %s is available  (you have v%s)",
+                        m_updater->LatestVersion().c_str(), kMurmurVersion);
+            long long mb = m_updater->AssetSizeBytes() / (1024 * 1024);
+            ImGui::TextDisabled("Download size: ~%lld MB. Your settings, models, and", mb);
+            ImGui::TextDisabled("recordings are kept.");
+            std::string notes = m_updater->ReleaseNotes();
+            if (!notes.empty()) {
+                ImGui::Spacing();
+                ImGui::BeginChild("##relnotes", ImVec2(-1, 140), ImGuiChildFlags_Border);
+                ImGui::TextWrapped("%s", notes.c_str());
+                ImGui::EndChild();
+            }
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.13f, 0.45f, 0.75f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.55f, 0.85f, 1.0f));
+            if (ImGui::Button("Download & Install", ImVec2(160, 28))) {
+                m_updater->DownloadAndStageAsync();
+            }
+            ImGui::PopStyleColor(2);
+            break;
+        }
+        case Updater::State::DOWNLOADING:
+            ImGui::Text("Downloading update...");
+            ImGui::ProgressBar(m_updater->Progress(), ImVec2(-1, 0));
+            break;
+        case Updater::State::EXTRACTING:
+            ImGui::Text("Preparing update...");
+            break;
+        case Updater::State::READY:
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Update downloaded and ready.");
+            ImGui::TextWrapped("Murmur will close, install the update, and reopen automatically.");
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.15f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.65f, 0.20f, 1.0f));
+            if (ImGui::Button("Restart && Update", ImVec2(160, 28))) {
+                if (m_updater->LaunchApplyAndQuit()) {
+                    m_requestQuit = true;
+                }
+            }
+            ImGui::PopStyleColor(2);
+            break;
+        case Updater::State::FAILED:
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", m_updater->Error().c_str());
+            ImGui::Spacing();
+            if (ImGui::Button("Retry", ImVec2(100, 0))) {
+                m_updater->CheckAsync();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Open Releases Page", ImVec2(160, 0))) {
+                ShellExecuteW(nullptr, L"open",
+                              L"https://github.com/Roach9223/Murmur/releases/latest",
+                              nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            break;
+        default:
+            ImGui::Text("No update check has run yet.");
+            break;
+        }
+
+        ImGui::Spacing();
+        bool busy = (us == Updater::State::DOWNLOADING || us == Updater::State::EXTRACTING);
+        if (busy) ImGui::BeginDisabled();
+        if (ImGui::Button(us == Updater::State::UPDATE_AVAILABLE ||
+                          us == Updater::State::READY ? "Later" : "Close", ImVec2(100, 0))) {
+            m_showUpdatePopup = false;
+            ImGui::CloseCurrentPopup();
+        }
+        if (busy) ImGui::EndDisabled();
+
+        ImGui::EndPopup();
+    }
 
     // --- Instructions popup ---
     if (m_showInstructions) {
