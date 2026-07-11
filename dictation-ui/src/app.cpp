@@ -35,7 +35,7 @@ static const char* kCalFallbackPrompt =
 
 // UI version — keep in lockstep with VERSION in services/server.py.
 // Used by the self-updater to compare against the latest GitHub release.
-static const char* kMurmurVersion = "1.2.4";
+static const char* kMurmurVersion = "1.3.0";
 
 static std::wstring ExeDirW()
 {

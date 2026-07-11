@@ -5,11 +5,11 @@
 
 // Dual-theme system.
 //
-// "Classic"  — the original Murmur look, preserved deliberately: multi-hued
-//              buttons (blue / purple / green), 3px rounding, flat banner.
-// "Studio"   — the designed identity: one teal accent for everything
+// "Studio"   — the default Murmur identity: one teal accent for everything
 //              interactive, semantic red/green/amber reserved for meaning,
-//              softer rounding, gradient banner, pill-shaped mode buttons.
+//              softer rounding, living banner, glow spectrum, pill buttons.
+// "Classic"  — the original debug-era look, preserved as a backup: multi-
+//              hued buttons (blue / purple / green), 3px rounding, flat.
 //
 // Switch live via View → Theme; the choice persists in ui_settings.json
 // next to Murmur.exe.

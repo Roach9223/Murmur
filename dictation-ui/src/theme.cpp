@@ -311,11 +311,11 @@ std::string LoadThemePreference()
         std::ifstream f(SettingsPath());
         if (f) {
             nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
-            if (j.is_object() && j.value("theme", "") == "studio")
-                return "studio";
+            if (j.is_object() && j.value("theme", "") == "classic")
+                return "classic";  // explicitly chosen backup look
         }
     } catch (...) {}
-    return "classic";
+    return "studio";  // the default Murmur identity
 }
 
 void SaveThemePreference(const std::string& name)
