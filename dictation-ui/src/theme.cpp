@@ -163,6 +163,7 @@ Theme MakeStudioTheme()
     t.FancyBanner = true;
     t.PillMode    = true;
     t.OutputCard  = true;
+    t.ModernFX    = true;
     t.Rounding    = 5.0f;
     return t;
 }
@@ -242,6 +243,11 @@ void Theme::Apply(ImGuiStyle& s) const
     c[ImGuiCol_TextSelectedBg]       = WithAlpha(Accent, 0.30f);
     c[ImGuiCol_NavHighlight]         = Accent;
     c[ImGuiCol_ModalWindowDimBg]     = ImVec4(0, 0, 0, 0.60f);
+    if (ModernFX) {
+        // Progress bars + plots pick up the brand accent in Studio
+        c[ImGuiCol_PlotHistogram]        = Darken(Accent, 0.10f);
+        c[ImGuiCol_PlotHistogramHovered] = Accent;
+    }
 }
 
 // --- phases -------------------------------------------------------------------

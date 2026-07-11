@@ -74,6 +74,20 @@ static bool SliderCommit(const char* label, float statusVal, float vmin, float v
     return committed;
 }
 
+// CollapsingHeader with a Studio accent tick on the left edge
+static bool ThemedHeader(const char* label, ImGuiTreeNodeFlags flags = 0)
+{
+    bool open = ImGui::CollapsingHeader(label, flags);
+    if (g_theme.ModernFX) {
+        ImVec2 mn = ImGui::GetItemRectMin();
+        ImVec2 mx = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            mn, ImVec2(mn.x + 3.0f, mx.y),
+            Theme::U32(g_theme.Accent, open ? 1.0f : 0.45f), 2.0f);
+    }
+    return open;
+}
+
 DictationApp::DictationApp(EngineClient& engine, EngineProcess& process)
     : m_engine(engine), m_process(process)
 {
@@ -455,11 +469,13 @@ void DictationApp::Render()
         std::string hkUpper = status.hotkey;
         for (auto& c : hkUpper) c = (char)toupper((unsigned char)c);
 
+        float bannerH = g_theme.FancyBanner ? 52.0f : 42.0f;
+
         ImGui::PushFont(g_bannerFont);
         if (status.model_loading) {
             float pulse = 0.4f + 0.15f * (float)sin(ImGui::GetTime() * 3.0);
             g_theme.PushPulseButton(ImVec4(pulse, pulse * 0.7f, 0.05f, 1.0f));
-            ImGui::Button("Loading Whisper Model...", ImVec2(-1, 42));
+            ImGui::Button("Loading Whisper Model...", ImVec2(-1, bannerH));
             ImGui::PopStyleColor(3);
         } else if (status.recording) {
             float pulse = 0.5f + 0.3f * (float)sin(ImGui::GetTime() * 4.0);
@@ -467,32 +483,42 @@ void DictationApp::Render()
             g_theme.PushButton({recCol, g_theme.BtnDanger.hover, g_theme.BtnDanger.active});
             char label[128];
             snprintf(label, sizeof(label), "Voice to Type  \xc2\xb7  Active  (%s to stop)", hkUpper.c_str());
-            if (ImGui::Button(label, ImVec2(-1, 42)))
+            if (ImGui::Button(label, ImVec2(-1, bannerH)))
                 m_engine.Stop();
             ImGui::PopStyleColor(3);
         } else {
             g_theme.PushNeutralButton();
             char label[128];
             snprintf(label, sizeof(label), "Voice to Type  \xc2\xb7  Press %s to start", hkUpper.c_str());
-            if (ImGui::Button(label, ImVec2(-1, 42)))
+            if (ImGui::Button(label, ImVec2(-1, bannerH)))
                 m_engine.Start();
             ImGui::PopStyleColor(3);
         }
 
-        // Studio: subtle top sheen + state accents on the banner
+        // Studio: sheen + living state accents on the banner
         if (g_theme.FancyBanner) {
             ImDrawList* bdl = ImGui::GetWindowDrawList();
             ImVec2 bmin = ImGui::GetItemRectMin();
             ImVec2 bmax = ImGui::GetItemRectMax();
+            // top sheen
             bdl->AddRectFilledMultiColor(
                 bmin, ImVec2(bmax.x, bmin.y + (bmax.y - bmin.y) * 0.45f),
                 IM_COL32(255, 255, 255, 12), IM_COL32(255, 255, 255, 12),
                 IM_COL32(255, 255, 255, 0),  IM_COL32(255, 255, 255, 0));
             if (status.recording) {
-                float glow = 0.55f + 0.35f * (float)sin(ImGui::GetTime() * 4.0);
-                bdl->AddRect(bmin, bmax, Theme::U32(g_theme.Danger, glow),
+                // Audio-reactive glow: base pulse + your voice level drives it
+                float rmsBoost = fminf(status.audio_rms * 6.0f, 0.45f);
+                float glow = 0.40f + 0.20f * (float)sin(ImGui::GetTime() * 4.0) + rmsBoost;
+                bdl->AddRect(bmin, bmax, Theme::U32(g_theme.Danger, fminf(glow, 1.0f)),
                              g_theme.Rounding, 0, 2.0f);
+                bdl->AddRect(ImVec2(bmin.x - 2, bmin.y - 2), ImVec2(bmax.x + 2, bmax.y + 2),
+                             Theme::U32(g_theme.Danger, fminf(glow, 1.0f) * 0.35f),
+                             g_theme.Rounding + 2.0f, 0, 3.0f);
             } else if (!status.model_loading) {
+                // Idle: slow "breathing" teal outline + accent bottom edge
+                float breathe = 0.18f + 0.10f * (float)sin(ImGui::GetTime() * 1.6);
+                bdl->AddRect(bmin, bmax, Theme::U32(g_theme.Accent, breathe),
+                             g_theme.Rounding, 0, 1.5f);
                 bdl->AddRectFilled(ImVec2(bmin.x, bmax.y - 2.0f), bmax,
                                    Theme::U32(g_theme.Accent, 0.55f), 1.0f);
             }
@@ -534,10 +560,29 @@ void DictationApp::Render()
         m_stateColor[2] += fadeAlpha * (targetColor.z - m_stateColor[2]);
         std::string phaseUpper = status.phase;
         for (auto& c : phaseUpper) c = (char)toupper((unsigned char)c);
-        float pw = ImGui::CalcTextSize(phaseUpper.c_str()).x + 14.0f;
-        ImGui::SameLine(ImGui::GetWindowWidth() - pw);
-        ImGui::TextColored(ImVec4(m_stateColor[0], m_stateColor[1], m_stateColor[2], 1.0f),
-                           "%s", phaseUpper.c_str());
+        ImVec4 phaseCol(m_stateColor[0], m_stateColor[1], m_stateColor[2], 1.0f);
+        if (g_theme.ModernFX) {
+            // Studio: rounded status chip with a live dot
+            float textW = ImGui::CalcTextSize(phaseUpper.c_str()).x;
+            float chipH = ImGui::GetTextLineHeight() + 8.0f;
+            float chipW = textW + 34.0f;
+            ImGui::SameLine(ImGui::GetWindowWidth() - chipW - 10.0f);
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            ImDrawList* cdl = ImGui::GetWindowDrawList();
+            cdl->AddRectFilled(p, ImVec2(p.x + chipW, p.y + chipH),
+                               Theme::U32(phaseCol, 0.13f), chipH * 0.5f);
+            cdl->AddRect(p, ImVec2(p.x + chipW, p.y + chipH),
+                         Theme::U32(phaseCol, 0.35f), chipH * 0.5f, 0, 1.0f);
+            cdl->AddCircleFilled(ImVec2(p.x + 13.0f, p.y + chipH * 0.5f), 3.5f,
+                                 Theme::U32(phaseCol));
+            cdl->AddText(ImVec2(p.x + 23.0f, p.y + 4.0f),
+                         Theme::U32(phaseCol), phaseUpper.c_str());
+            ImGui::Dummy(ImVec2(chipW, chipH));
+        } else {
+            float pw = ImGui::CalcTextSize(phaseUpper.c_str()).x + 14.0f;
+            ImGui::SameLine(ImGui::GetWindowWidth() - pw);
+            ImGui::TextColored(phaseCol, "%s", phaseUpper.c_str());
+        }
     }
     {
         ImGui::AlignTextToFramePadding();
@@ -1239,14 +1284,18 @@ void DictationApp::Render()
         float width = ImGui::GetContentRegionAvail().x;
         float height = 120.0f;
         ImDrawList* dl = ImGui::GetWindowDrawList();
+        float panelRound = g_theme.ModernFX ? 5.0f : 0.0f;
 
         if (status.is_speech) {
             dl->AddRect(ImVec2(pos.x - 1, pos.y - 1),
                         ImVec2(pos.x + width + 1, pos.y + height + 1),
-                        glowColor, 0.0f, 0, 2.0f);
+                        glowColor, panelRound, 0, 2.0f);
         }
 
-        dl->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), g_theme.PanelBg);
+        dl->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), g_theme.PanelBg, panelRound);
+        if (g_theme.ModernFX)
+            dl->AddRect(pos, ImVec2(pos.x + width, pos.y + height),
+                        Theme::U32(g_theme.Border), panelRound);
 
         // Grid lines + labels (20Hz-20kHz, matching Python FFT range)
         float logMin = log10f(20.0f), logMax = log10f(20000.0f);
@@ -1302,11 +1351,25 @@ void DictationApp::Render()
         }
 
         // Filled area
-        for (int i = 0; i < kSpectrumBins - 1; ++i) {
-            ImVec2 bl(points[i].x, pos.y + height);
-            ImVec2 br(points[i + 1].x, pos.y + height);
-            dl->AddTriangleFilled(points[i], points[i + 1], br, fillColor);
-            dl->AddTriangleFilled(points[i], br, bl, fillColor);
+        if (g_theme.ModernFX) {
+            // Studio: vertical gradient under the curve — bright at the
+            // waveform, fading to nothing at the floor
+            ImVec4 base = g_theme.PhaseColor(status.phase);
+            ImU32 gradTop = Theme::U32(base, 0.30f);
+            ImU32 gradBot = Theme::U32(base, 0.0f);
+            for (int i = 0; i < kSpectrumBins - 1; ++i) {
+                float yTop = fminf(points[i].y, points[i + 1].y);
+                dl->AddRectFilledMultiColor(ImVec2(points[i].x, yTop),
+                                            ImVec2(points[i + 1].x, pos.y + height),
+                                            gradTop, gradTop, gradBot, gradBot);
+            }
+        } else {
+            for (int i = 0; i < kSpectrumBins - 1; ++i) {
+                ImVec2 bl(points[i].x, pos.y + height);
+                ImVec2 br(points[i + 1].x, pos.y + height);
+                dl->AddTriangleFilled(points[i], points[i + 1], br, fillColor);
+                dl->AddTriangleFilled(points[i], br, bl, fillColor);
+            }
         }
 
         // Shimmer overlay during recording — subtle traveling highlight
@@ -1326,7 +1389,9 @@ void DictationApp::Render()
             }
         }
 
-        // Curve line
+        // Curve line (Studio: soft glow pass underneath)
+        if (g_theme.ModernFX)
+            dl->AddPolyline(points, kSpectrumBins, glowColor, 0, 6.0f);
         dl->AddPolyline(points, kSpectrumBins, lineColor, 0, 2.0f);
 
         // Peak hold dots
@@ -1363,8 +1428,12 @@ void DictationApp::Render()
         ImDrawList* dl = ImGui::GetWindowDrawList();
 
         // Background
+        float vuRound = g_theme.ModernFX ? 4.0f : 0.0f;
         dl->AddRectFilled(vuPos, ImVec2(vuPos.x + vuWidth, vuPos.y + vuHeight),
-                          g_theme.PanelBg);
+                          g_theme.PanelBg, vuRound);
+        if (g_theme.ModernFX)
+            dl->AddRect(vuPos, ImVec2(vuPos.x + vuWidth, vuPos.y + vuHeight),
+                        Theme::U32(g_theme.Border), vuRound);
 
         // dBFS scale: map input_dbfs from [-80, 0] to [0, 1]
         float dbfs = m_smoothInputDbfs;
@@ -1376,24 +1445,44 @@ void DictationApp::Render()
         float greenEnd = ((-12.0f + 80.0f) / 80.0f) * vuWidth;
         float yellowEnd = ((-3.0f + 80.0f) / 80.0f) * vuWidth;
 
-        // Green segment
-        if (fillW > 0) {
-            float gW = fminf(fillW, greenEnd);
-            dl->AddRectFilled(vuPos, ImVec2(vuPos.x + gW, vuPos.y + vuHeight),
-                              g_theme.VuGreen);
-        }
-        // Yellow segment
-        if (fillW > greenEnd) {
-            float yW = fminf(fillW, yellowEnd);
-            dl->AddRectFilled(ImVec2(vuPos.x + greenEnd, vuPos.y),
-                              ImVec2(vuPos.x + yW, vuPos.y + vuHeight),
-                              g_theme.VuYellow);
-        }
-        // Red segment
-        if (fillW > yellowEnd) {
-            dl->AddRectFilled(ImVec2(vuPos.x + yellowEnd, vuPos.y),
-                              ImVec2(vuPos.x + fillW, vuPos.y + vuHeight),
-                              g_theme.VuRed);
+        if (g_theme.ModernFX) {
+            // Studio: continuous green→yellow→red gradient across the lit width
+            if (fillW > 0) {
+                float gW = fminf(fillW, greenEnd);
+                dl->AddRectFilled(vuPos, ImVec2(vuPos.x + gW, vuPos.y + vuHeight),
+                                  g_theme.VuGreen, vuRound, ImDrawFlags_RoundCornersLeft);
+            }
+            if (fillW > greenEnd) {
+                float yW = fminf(fillW, yellowEnd);
+                dl->AddRectFilledMultiColor(ImVec2(vuPos.x + greenEnd, vuPos.y),
+                                            ImVec2(vuPos.x + yW, vuPos.y + vuHeight),
+                                            g_theme.VuGreen, g_theme.VuYellow,
+                                            g_theme.VuYellow, g_theme.VuGreen);
+            }
+            if (fillW > yellowEnd) {
+                dl->AddRectFilledMultiColor(ImVec2(vuPos.x + yellowEnd, vuPos.y),
+                                            ImVec2(vuPos.x + fillW, vuPos.y + vuHeight),
+                                            g_theme.VuYellow, g_theme.VuRed,
+                                            g_theme.VuRed, g_theme.VuYellow);
+            }
+        } else {
+            // Classic: hard green / yellow / red segments
+            if (fillW > 0) {
+                float gW = fminf(fillW, greenEnd);
+                dl->AddRectFilled(vuPos, ImVec2(vuPos.x + gW, vuPos.y + vuHeight),
+                                  g_theme.VuGreen);
+            }
+            if (fillW > greenEnd) {
+                float yW = fminf(fillW, yellowEnd);
+                dl->AddRectFilled(ImVec2(vuPos.x + greenEnd, vuPos.y),
+                                  ImVec2(vuPos.x + yW, vuPos.y + vuHeight),
+                                  g_theme.VuYellow);
+            }
+            if (fillW > yellowEnd) {
+                dl->AddRectFilled(ImVec2(vuPos.x + yellowEnd, vuPos.y),
+                                  ImVec2(vuPos.x + fillW, vuPos.y + vuHeight),
+                                  g_theme.VuRed);
+            }
         }
 
         // Peak hold indicator (thin bright line)
@@ -1436,7 +1525,7 @@ void DictationApp::Render()
     ImGui::Separator();
 
     // --- Audio Processing (set-once controls; collapsed by default) ---
-    if (ImGui::CollapsingHeader("Audio Processing")) {
+    if (ThemedHeader("Audio Processing")) {
         if (status.has_dsp) {
         // === Noise Gate ===
         {
@@ -1634,7 +1723,7 @@ void DictationApp::Render()
     } else {
         snprintf(recHeaderLabel, sizeof(recHeaderLabel), "Recording & Files###RecFiles");
     }
-    if (ImGui::CollapsingHeader(recHeaderLabel)) {
+    if (ThemedHeader(recHeaderLabel)) {
         // --- Record / Audio to Text / Folder ---
 
         // Record button
@@ -1830,7 +1919,7 @@ void DictationApp::Render()
     }
 
     // --- Diagnostics (open by default — latency is core feedback) ---
-    if (ImGui::CollapsingHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ThemedHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
     // --- Latency ---
     float gen_ms = status.latency.transcribe_ms + status.latency.cleanup_ms
                  + status.latency.type_ms;

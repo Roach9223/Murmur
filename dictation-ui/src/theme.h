@@ -56,6 +56,7 @@ struct Theme {
     bool  FancyBanner = false;   // gradient banner + recording glow border
     bool  PillMode    = false;   // rounded pill mode buttons
     bool  OutputCard  = false;   // Heard/Typed in a bordered card
+    bool  ModernFX    = false;   // glow spectrum, gradient VU, header ticks, phase chip
     float Rounding    = 3.0f;
 
     // --- methods ---
