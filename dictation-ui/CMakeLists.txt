@@ -17,6 +17,7 @@ add_executable(${PROJECT_NAME}
     src/engine_client.cpp
     src/engine_process.cpp
     src/updater.cpp
+    src/theme.cpp
     src/dx11_helpers.cpp
     src/murmur.rc
 )

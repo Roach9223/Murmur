@@ -10,6 +10,7 @@
 #include "app.h"
 #include "engine_client.h"
 #include "engine_process.h"
+#include "theme.h"
 
 // Forward declare ImGui Win32 message handler
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
@@ -98,81 +99,8 @@ int main(int, char**)
 
     ImGui::StyleColorsDark();
 
-    // --- Murmur custom theme ---
-    {
-        ImGuiStyle& s = ImGui::GetStyle();
-
-        // Geometry: subtle rounding, clean spacing
-        s.WindowRounding    = 4.0f;
-        s.ChildRounding     = 3.0f;
-        s.FrameRounding     = 3.0f;
-        s.PopupRounding     = 4.0f;
-        s.ScrollbarRounding = 6.0f;
-        s.GrabRounding      = 3.0f;
-        s.TabRounding       = 3.0f;
-
-        s.WindowPadding     = ImVec2(10, 10);
-        s.FramePadding      = ImVec2(8, 4);
-        s.ItemSpacing       = ImVec2(8, 5);
-        s.ItemInnerSpacing  = ImVec2(6, 4);
-        s.ScrollbarSize     = 12.0f;
-        s.GrabMinSize       = 8.0f;
-
-        s.WindowBorderSize  = 1.0f;
-        s.ChildBorderSize   = 1.0f;
-        s.PopupBorderSize   = 1.0f;
-        s.FrameBorderSize   = 0.0f;
-        s.TabBorderSize     = 0.0f;
-
-        s.SeparatorTextBorderSize = 2.0f;
-
-        // Colors: deep dark base with cyan/teal accent
-        ImVec4* c = s.Colors;
-        c[ImGuiCol_Text]                  = ImVec4(0.92f, 0.93f, 0.94f, 1.00f);
-        c[ImGuiCol_TextDisabled]          = ImVec4(0.42f, 0.44f, 0.47f, 1.00f);
-        c[ImGuiCol_WindowBg]              = ImVec4(0.06f, 0.06f, 0.07f, 1.00f);
-        c[ImGuiCol_ChildBg]               = ImVec4(0.07f, 0.07f, 0.08f, 1.00f);
-        c[ImGuiCol_PopupBg]               = ImVec4(0.08f, 0.08f, 0.09f, 0.98f);
-        c[ImGuiCol_Border]                = ImVec4(0.18f, 0.19f, 0.22f, 0.60f);
-        c[ImGuiCol_BorderShadow]          = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-        c[ImGuiCol_FrameBg]               = ImVec4(0.11f, 0.12f, 0.14f, 1.00f);
-        c[ImGuiCol_FrameBgHovered]        = ImVec4(0.15f, 0.16f, 0.19f, 1.00f);
-        c[ImGuiCol_FrameBgActive]         = ImVec4(0.18f, 0.20f, 0.24f, 1.00f);
-        c[ImGuiCol_TitleBg]               = ImVec4(0.05f, 0.05f, 0.06f, 1.00f);
-        c[ImGuiCol_TitleBgActive]         = ImVec4(0.07f, 0.07f, 0.09f, 1.00f);
-        c[ImGuiCol_TitleBgCollapsed]      = ImVec4(0.05f, 0.05f, 0.06f, 0.50f);
-        c[ImGuiCol_MenuBarBg]             = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
-        c[ImGuiCol_ScrollbarBg]           = ImVec4(0.05f, 0.05f, 0.06f, 0.50f);
-        c[ImGuiCol_ScrollbarGrab]         = ImVec4(0.22f, 0.23f, 0.26f, 1.00f);
-        c[ImGuiCol_ScrollbarGrabHovered]  = ImVec4(0.30f, 0.32f, 0.36f, 1.00f);
-        c[ImGuiCol_ScrollbarGrabActive]   = ImVec4(0.38f, 0.40f, 0.45f, 1.00f);
-        c[ImGuiCol_CheckMark]             = ImVec4(0.24f, 0.78f, 0.78f, 1.00f);
-        c[ImGuiCol_SliderGrab]            = ImVec4(0.24f, 0.70f, 0.70f, 1.00f);
-        c[ImGuiCol_SliderGrabActive]      = ImVec4(0.30f, 0.85f, 0.85f, 1.00f);
-        c[ImGuiCol_Button]                = ImVec4(0.13f, 0.14f, 0.17f, 1.00f);
-        c[ImGuiCol_ButtonHovered]         = ImVec4(0.18f, 0.20f, 0.25f, 1.00f);
-        c[ImGuiCol_ButtonActive]          = ImVec4(0.24f, 0.70f, 0.70f, 0.60f);
-        c[ImGuiCol_Header]               = ImVec4(0.13f, 0.14f, 0.17f, 1.00f);
-        c[ImGuiCol_HeaderHovered]         = ImVec4(0.18f, 0.20f, 0.25f, 1.00f);
-        c[ImGuiCol_HeaderActive]          = ImVec4(0.22f, 0.24f, 0.30f, 1.00f);
-        c[ImGuiCol_Separator]             = ImVec4(0.18f, 0.19f, 0.22f, 0.60f);
-        c[ImGuiCol_SeparatorHovered]      = ImVec4(0.24f, 0.70f, 0.70f, 0.60f);
-        c[ImGuiCol_SeparatorActive]       = ImVec4(0.24f, 0.78f, 0.78f, 1.00f);
-        c[ImGuiCol_ResizeGrip]            = ImVec4(0.22f, 0.23f, 0.26f, 0.50f);
-        c[ImGuiCol_ResizeGripHovered]     = ImVec4(0.24f, 0.70f, 0.70f, 0.60f);
-        c[ImGuiCol_ResizeGripActive]      = ImVec4(0.24f, 0.78f, 0.78f, 1.00f);
-        c[ImGuiCol_Tab]                   = ImVec4(0.11f, 0.12f, 0.14f, 1.00f);
-        c[ImGuiCol_TabHovered]            = ImVec4(0.24f, 0.70f, 0.70f, 0.40f);
-        c[ImGuiCol_TabSelected]           = ImVec4(0.18f, 0.50f, 0.50f, 1.00f);
-        c[ImGuiCol_TableHeaderBg]         = ImVec4(0.10f, 0.11f, 0.13f, 1.00f);
-        c[ImGuiCol_TableBorderStrong]     = ImVec4(0.18f, 0.19f, 0.22f, 1.00f);
-        c[ImGuiCol_TableBorderLight]      = ImVec4(0.14f, 0.15f, 0.17f, 1.00f);
-        c[ImGuiCol_TableRowBg]            = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
-        c[ImGuiCol_TableRowBgAlt]         = ImVec4(0.10f, 0.10f, 0.12f, 0.40f);
-        c[ImGuiCol_TextSelectedBg]        = ImVec4(0.24f, 0.70f, 0.70f, 0.30f);
-        c[ImGuiCol_NavHighlight]          = ImVec4(0.24f, 0.78f, 0.78f, 1.00f);
-        c[ImGuiCol_ModalWindowDimBg]      = ImVec4(0.00f, 0.00f, 0.00f, 0.60f);
-    }
+    // --- Murmur theme: Classic (default) or Studio, persisted in ui_settings.json ---
+    SetActiveTheme(LoadThemePreference());
 
     // --- Load fonts ---
     {
@@ -211,8 +139,7 @@ int main(int, char**)
 
     DictationApp app(engine, engineProc);
 
-    // Render loop
-    ImVec4 clearColor = ImVec4(0.06f, 0.06f, 0.06f, 1.0f);
+    // Render loop (clear color tracks the active theme each frame)
     bool running = true;
 
     while (running)
@@ -252,6 +179,7 @@ int main(int, char**)
 
         // Finalize
         ImGui::Render();
+        const ImVec4 clearColor = g_theme.Bg0;
         const float cc[4] = {
             clearColor.x * clearColor.w,
             clearColor.y * clearColor.w,

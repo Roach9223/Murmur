@@ -1,5 +1,6 @@
 #include "app.h"
 #include "imgui.h"
+#include "theme.h"
 #include <nlohmann/json.hpp>
 #include <cstring>
 #include <cctype>
@@ -266,6 +267,23 @@ void DictationApp::Render()
             ImGui::EndMenu();
         }
 
+        // --- View menu ---
+        if (ImGui::BeginMenu("View")) {
+            if (ImGui::BeginMenu("Theme")) {
+                bool classic = (std::string(g_theme.name) == "classic");
+                if (ImGui::MenuItem("Classic", nullptr, classic) && !classic) {
+                    SetActiveTheme("classic");
+                    SaveThemePreference("classic");
+                }
+                if (ImGui::MenuItem("Studio", nullptr, !classic) && classic) {
+                    SetActiveTheme("studio");
+                    SaveThemePreference("studio");
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::EndMenu();
+        }
+
         // --- Help menu ---
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("Instructions")) {
@@ -307,9 +325,7 @@ void DictationApp::Render()
             if (updBuf[0]) {
                 float updW = ImGui::CalcTextSize(updBuf).x + 18.0f;
                 ImGui::SetCursorPosX(ImGui::GetWindowWidth() - w - updW - 10.0f);
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.13f, 0.45f, 0.75f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.18f, 0.55f, 0.85f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.35f, 0.60f, 1.0f));
+                g_theme.PushAccentButton();
                 if (ImGui::SmallButton(updBuf)) {
                     m_showUpdatePopup = true;
                 }
@@ -318,9 +334,9 @@ void DictationApp::Render()
             }
 
             ImGui::SetCursorPosX(ImGui::GetWindowWidth() - w);
-            ImVec4 dotCol = !status.connected      ? ImVec4(0.90f, 0.25f, 0.25f, 1.0f)
-                          : status.model_loading   ? ImVec4(0.90f, 0.70f, 0.10f, 1.0f)
-                          :                          ImVec4(0.20f, 0.85f, 0.30f, 1.0f);
+            ImVec4 dotCol = !status.connected      ? g_theme.Danger
+                          : status.model_loading   ? g_theme.Warning
+                          :                          g_theme.Success;
             ImVec2 cp = ImGui::GetCursorScreenPos();
             ImGui::GetWindowDrawList()->AddCircleFilled(
                 ImVec2(cp.x + 5.0f, cp.y + ImGui::GetTextLineHeight() * 0.55f),
@@ -335,7 +351,7 @@ void DictationApp::Render()
 
     // Handle hotkey capture (runs outside menu so it catches key presses)
     if (m_capturingHotkey) {
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.1f, 1.0f),
+        ImGui::TextColored(g_theme.Warning,
                            ">> Press any key or click a mouse button <<");
         // Keyboard keys (up to MouseLeft boundary)
         for (int key = ImGuiKey_NamedKey_BEGIN; key < ImGuiKey_MouseLeft; key++) {
@@ -369,7 +385,7 @@ void DictationApp::Render()
 
     // Handle media hotkey capture (same pattern as dictation hotkey)
     if (m_capturingMediaHotkey) {
-        ImGui::TextColored(ImVec4(0.1f, 0.8f, 1.0f, 1.0f),
+        ImGui::TextColored(g_theme.Info,
                            ">> Press any key or mouse button for media hotkey <<");
         for (int key = ImGuiKey_NamedKey_BEGIN; key < ImGuiKey_MouseLeft; key++) {
             if (ImGui::IsKeyPressed((ImGuiKey)key)) {
@@ -401,7 +417,7 @@ void DictationApp::Render()
 
     // --- Disconnected screen (connected status lives in the menu bar) ---
     if (!status.connected) {
-        ImGui::TextColored(ImVec4(0.9f, 0.2f, 0.2f, 1.0f), "ENGINE: DISCONNECTED");
+        ImGui::TextColored(g_theme.Danger, "ENGINE: DISCONNECTED");
         ImGui::SameLine();
         ImGui::TextDisabled("Waiting for engine on 127.0.0.1:8899...");
         ImGui::Separator();
@@ -409,14 +425,14 @@ void DictationApp::Render()
         auto procState = m_process.GetState();
         switch (procState) {
         case EngineProcess::State::LAUNCHING:
-            ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.1f, 1.0f), "LAUNCHING ENGINE...");
+            ImGui::TextColored(g_theme.Warning, "LAUNCHING ENGINE...");
             break;
         case EngineProcess::State::RUNNING:
-            ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.1f, 1.0f),
+            ImGui::TextColored(g_theme.Warning,
                                "Engine process started, waiting for connection...");
             break;
         case EngineProcess::State::FAILED:
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Engine launch failed:");
+            ImGui::TextColored(g_theme.Danger, "Engine launch failed:");
             ImGui::TextWrapped("%s", m_process.GetError().c_str());
             break;
         default:
@@ -442,31 +458,44 @@ void DictationApp::Render()
         ImGui::PushFont(g_bannerFont);
         if (status.model_loading) {
             float pulse = 0.4f + 0.15f * (float)sin(ImGui::GetTime() * 3.0);
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(pulse, pulse * 0.7f, 0.05f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(pulse, pulse * 0.7f, 0.05f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(pulse, pulse * 0.7f, 0.05f, 1.0f));
+            g_theme.PushPulseButton(ImVec4(pulse, pulse * 0.7f, 0.05f, 1.0f));
             ImGui::Button("Loading Whisper Model...", ImVec2(-1, 42));
             ImGui::PopStyleColor(3);
         } else if (status.recording) {
             float pulse = 0.5f + 0.3f * (float)sin(ImGui::GetTime() * 4.0);
             ImVec4 recCol(pulse, 0.08f, 0.08f, 1.0f);
-            ImGui::PushStyleColor(ImGuiCol_Button, recCol);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.4f, 0.05f, 0.05f, 1.0f));
+            g_theme.PushButton({recCol, g_theme.BtnDanger.hover, g_theme.BtnDanger.active});
             char label[128];
             snprintf(label, sizeof(label), "Voice to Type  \xc2\xb7  Active  (%s to stop)", hkUpper.c_str());
             if (ImGui::Button(label, ImVec2(-1, 42)))
                 m_engine.Stop();
             ImGui::PopStyleColor(3);
         } else {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
+            g_theme.PushNeutralButton();
             char label[128];
             snprintf(label, sizeof(label), "Voice to Type  \xc2\xb7  Press %s to start", hkUpper.c_str());
             if (ImGui::Button(label, ImVec2(-1, 42)))
                 m_engine.Start();
             ImGui::PopStyleColor(3);
+        }
+
+        // Studio: subtle top sheen + state accents on the banner
+        if (g_theme.FancyBanner) {
+            ImDrawList* bdl = ImGui::GetWindowDrawList();
+            ImVec2 bmin = ImGui::GetItemRectMin();
+            ImVec2 bmax = ImGui::GetItemRectMax();
+            bdl->AddRectFilledMultiColor(
+                bmin, ImVec2(bmax.x, bmin.y + (bmax.y - bmin.y) * 0.45f),
+                IM_COL32(255, 255, 255, 12), IM_COL32(255, 255, 255, 12),
+                IM_COL32(255, 255, 255, 0),  IM_COL32(255, 255, 255, 0));
+            if (status.recording) {
+                float glow = 0.55f + 0.35f * (float)sin(ImGui::GetTime() * 4.0);
+                bdl->AddRect(bmin, bmax, Theme::U32(g_theme.Danger, glow),
+                             g_theme.Rounding, 0, 2.0f);
+            } else if (!status.model_loading) {
+                bdl->AddRectFilled(ImVec2(bmin.x, bmax.y - 2.0f), bmax,
+                                   Theme::U32(g_theme.Accent, 0.55f), 1.0f);
+            }
         }
         ImGui::PopFont();
     }
@@ -475,20 +504,14 @@ void DictationApp::Render()
     {
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Mode:");
+        if (g_theme.PillMode)
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 12.0f);
         for (const auto& mode : status.mode_names) {
             ImGui::SameLine(0, 6);
             bool active = (mode == status.current_mode);
             std::string label = mode;
             if (!label.empty()) label[0] = (char)toupper((unsigned char)label[0]);
-            if (active) {
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.45f, 0.80f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.55f, 0.90f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.35f, 0.70f, 1.0f));
-            } else {
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.22f, 0.22f, 0.22f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.32f, 0.32f, 0.32f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.18f, 0.18f, 0.18f, 1.0f));
-            }
+            g_theme.PushToggleButton(active);
             if (ImGui::Button(label.c_str(), ImVec2(0, 24)) && !active)
                 m_engine.SetMode(mode);
             ImGui::PopStyleColor(3);
@@ -500,16 +523,11 @@ void DictationApp::Render()
                 else if (mode == "detailed") ImGui::SetTooltip("Expand speech into detailed paragraphs (needs local LLM)");
             }
         }
+        if (g_theme.PillMode)
+            ImGui::PopStyleVar();
 
         // Colored engine-phase indicator, right-aligned on the pills row
-        ImVec4 targetColor = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);  // idle: muted gray
-        if (status.phase == "listening")              targetColor = ImVec4(0.3f, 0.5f, 1.0f, 1.0f);
-        else if (status.phase == "recording")         targetColor = ImVec4(1.0f, 0.6f, 0.1f, 1.0f);
-        else if (status.phase == "transcribing")      targetColor = ImVec4(0.7f, 0.4f, 1.0f, 1.0f);
-        else if (status.phase == "cleaning")          targetColor = ImVec4(0.2f, 0.9f, 0.9f, 1.0f);
-        else if (status.phase == "typing")            targetColor = ImVec4(0.2f, 0.9f, 0.3f, 1.0f);
-        else if (status.phase == "pending_approval")  targetColor = ImVec4(1.0f, 0.8f, 0.1f, 1.0f);
-        else if (status.phase == "error")             targetColor = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
+        ImVec4 targetColor = g_theme.PhaseColor(status.phase);
         float fadeAlpha = 1.0f - powf(0.5f, dt / 0.15f);
         m_stateColor[0] += fadeAlpha * (targetColor.x - m_stateColor[0]);
         m_stateColor[1] += fadeAlpha * (targetColor.y - m_stateColor[1]);
@@ -573,11 +591,11 @@ void DictationApp::Render()
             // Device badge: which hardware is actually running inference
             ImGui::SameLine(0, 8);
             if (status.whisper_device == "cuda") {
-                ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.35f, 1.0f), "GPU");
+                ImGui::TextColored(g_theme.Success, "GPU");
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Transcribing on NVIDIA GPU (CUDA)");
             } else if (!status.whisper_device.empty()) {
-                ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.20f, 1.0f), "CPU");
+                ImGui::TextColored(g_theme.Warning, "CPU");
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("Transcribing on CPU — no CUDA-capable NVIDIA GPU found.\n"
                                       "AMD/Intel GPUs are not supported for inference yet.\n"
@@ -655,9 +673,7 @@ void DictationApp::Render()
         if (m_capturingMediaHotkey) {
             // Capturing mode — pulsing button
             float pulse = 0.5f + 0.3f * (float)sin(ImGui::GetTime() * 4.0);
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.1f, pulse * 0.6f, pulse, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.1f, pulse * 0.6f, pulse, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.1f, pulse * 0.6f, pulse, 1.0f));
+            g_theme.PushPulseButton(ImVec4(0.1f, pulse * 0.6f, pulse, 1.0f));
             ImGui::Button("Press a key...", ImVec2(140, 25));
             ImGui::PopStyleColor(3);
         } else if (!status.media_hotkey.empty()) {
@@ -666,9 +682,7 @@ void DictationApp::Render()
             for (auto& c : mhkUpper) c = (char)toupper((unsigned char)c);
             char mhkLabel[64];
             snprintf(mhkLabel, sizeof(mhkLabel), "Media [%s]", mhkUpper.c_str());
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f, 0.25f, 0.60f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.65f, 0.35f, 0.70f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.45f, 0.15f, 0.50f, 1.0f));
+            g_theme.PushAltButton();
             if (ImGui::Button(mhkLabel, ImVec2(140, 25))) {
                 m_capturingMediaHotkey = true;
             }
@@ -680,9 +694,7 @@ void DictationApp::Render()
             }
         } else {
             // No hotkey — offer to set one
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+            g_theme.PushNeutralButton();
             if (ImGui::Button("Set Media Key", ImVec2(140, 25))) {
                 m_capturingMediaHotkey = true;
             }
@@ -697,43 +709,40 @@ void DictationApp::Render()
 
     // --- Pending approval panel ---
     if (status.phase == "pending_approval" && !status.pending_text.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.1f, 1.0f), "PENDING APPROVAL:");
+        ImGui::TextColored(g_theme.Warning, "PENDING APPROVAL:");
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
         ImGui::TextWrapped("%s", status.pending_text.c_str());
         ImGui::PopStyleColor();
         ImGui::Spacing();
 
         // Approve (green)
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.6f, 0.1f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.7f, 0.2f, 1.0f));
+        g_theme.PushSuccessButton();
         if (ImGui::Button("Approve", ImVec2(100, 30))) {
             m_engine.ApprovePending();
             m_editActive = false;
         }
-        ImGui::PopStyleColor(2);
+        Theme::PopButton();
 
         ImGui::SameLine();
 
-        // Edit (blue)
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.3f, 0.7f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.4f, 0.8f, 1.0f));
+        // Edit (accent)
+        g_theme.PushAccentButton();
         if (ImGui::Button("Edit", ImVec2(100, 30))) {
             strncpy(m_editBuffer, status.pending_text.c_str(), sizeof(m_editBuffer) - 1);
             m_editBuffer[sizeof(m_editBuffer) - 1] = '\0';
             m_editActive = true;
         }
-        ImGui::PopStyleColor(2);
+        Theme::PopButton();
 
         ImGui::SameLine();
 
         // Reject (red)
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+        g_theme.PushDangerButton();
         if (ImGui::Button("Reject", ImVec2(100, 30))) {
             m_engine.RejectPending();
             m_editActive = false;
         }
-        ImGui::PopStyleColor(2);
+        Theme::PopButton();
 
         // Edit text box
         if (m_editActive) {
@@ -756,10 +765,15 @@ void DictationApp::Render()
         m_editActive = false;
     }
 
-    // --- Last transcript ---
+    // --- Last transcript (Studio: on a bordered card surface) ---
+    if (g_theme.OutputCard) {
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
+        ImGui::BeginChild("##outputcard", ImVec2(-1, 0),
+                          ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
+    }
     ImGui::TextDisabled("Heard:");
     ImGui::Indent(8);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, g_theme.TextDim);
     ImGui::TextWrapped("%s", status.last_raw_transcript.empty()
                        ? "(waiting for speech...)" : status.last_raw_transcript.c_str());
     ImGui::PopStyleColor();
@@ -774,20 +788,27 @@ void DictationApp::Render()
         m_lastOutputText = status.last_cleaned_text;
         m_outputFlashTime = ImGui::GetTime();
     }
-    // Flash: bright white-green → normal green over 300ms
+    // Flash: bright white-green → theme Success over 300ms
     float flashAge = (float)(ImGui::GetTime() - m_outputFlashTime);
     float flashAlpha = fmaxf(0.0f, 1.0f - flashAge / 0.3f);
-    ImVec4 outputColor = ImVec4(0.4f + 0.6f * flashAlpha, 1.0f, 0.4f + 0.6f * flashAlpha, 1.0f);
+    ImVec4 outputColor = ImVec4(
+        g_theme.Success.x + (1.0f - g_theme.Success.x) * flashAlpha,
+        g_theme.Success.y + (1.0f - g_theme.Success.y) * flashAlpha,
+        g_theme.Success.z + (1.0f - g_theme.Success.z) * flashAlpha, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_Text, outputColor);
     ImGui::TextWrapped("%s", status.last_cleaned_text.empty()
                        ? "(waiting for speech...)" : status.last_cleaned_text.c_str());
     ImGui::PopStyleColor();
     ImGui::Unindent(8);
+    if (g_theme.OutputCard) {
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+    }
 
     // --- Error ---
     if (!status.last_error.empty()) {
         ImGui::Separator();
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+        ImGui::TextColored(g_theme.Danger,
                            "Error: %s", status.last_error.c_str());
     }
 
@@ -862,7 +883,7 @@ void DictationApp::Render()
             ImGui::SameLine();
             ImGui::TextDisabled("Transcription continues in the background");
         } else if (ft.status == "done" || ft.status == "saving") {
-            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Transcription Complete");
+            ImGui::TextColored(g_theme.Success, "Transcription Complete");
             ImGui::Spacing();
             ImGui::Text("File:");
             ImGui::SameLine();
@@ -887,14 +908,14 @@ void DictationApp::Render()
                 // A failed save no longer discards the transcription — tell
                 // the user why it failed so they can retry
                 if (!ft.save_error.empty()) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                    ImGui::TextColored(g_theme.Danger,
                                        "Save failed: %s", ft.save_error.c_str());
                 }
 
                 ImGui::Spacing();
 
                 if (ft.status == "saving") {
-                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Saving...");
+                    ImGui::TextColored(g_theme.Warning, "Saving...");
                     float t = (float)fmod(ImGui::GetTime() * 0.5, 1.0);
                     ImGui::ProgressBar(t, ImVec2(-1, 0));
                 } else {
@@ -942,7 +963,7 @@ void DictationApp::Render()
                 }
             }
         } else if (ft.status == "error") {
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Transcription Failed");
+            ImGui::TextColored(g_theme.Danger, "Transcription Failed");
             ImGui::Spacing();
             ImGui::TextWrapped("Error: %s", ft.error.c_str());
             ImGui::Spacing();
@@ -953,7 +974,7 @@ void DictationApp::Render()
             }
         } else {
             if (!m_lastTranscriptStatus.empty()) {
-                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", m_lastTranscriptStatus.c_str());
+                ImGui::TextColored(g_theme.Warning, "%s", m_lastTranscriptStatus.c_str());
                 ImGui::Spacing();
             }
             if (ImGui::Button("Close", ImVec2(80, 0))) {
@@ -1005,7 +1026,7 @@ void DictationApp::Render()
 
         if (m_calPhase == 0) {
             // Phase 0: Silence measurement
-            ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Step 1 of 2: Measuring Room Noise");
+            ImGui::TextColored(g_theme.Info, "Step 1 of 2: Measuring Room Noise");
             ImGui::Spacing();
             ImGui::TextWrapped("Stay quiet — measuring ambient noise level...");
             ImGui::Spacing();
@@ -1025,7 +1046,7 @@ void DictationApp::Render()
             }
         } else if (m_calPhase == 10) {
             // Waiting for silence-phase result
-            ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Step 1 of 2: Measuring Room Noise");
+            ImGui::TextColored(g_theme.Info, "Step 1 of 2: Measuring Room Noise");
             ImGui::Spacing();
             ImGui::TextDisabled("Processing...");
             if (m_calFinishFuture.valid() &&
@@ -1042,17 +1063,17 @@ void DictationApp::Render()
             }
         } else if (m_calPhase == 1) {
             // Phase 1: Speech measurement
-            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Step 2 of 2: Measuring Speech Level");
+            ImGui::TextColored(g_theme.Success, "Step 2 of 2: Measuring Speech Level");
             ImGui::Spacing();
             ImGui::TextWrapped("Read this sentence aloud at your normal speaking volume:");
             ImGui::Spacing();
 
             // Display the LLM-generated prompt prominently
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.15f, 0.2f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, g_theme.AccentWash);
             ImGui::BeginChild("##calPrompt", ImVec2(-1, 50), ImGuiChildFlags_Border);
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 8.0f);
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.7f, 1.0f), "\"%s\"", m_calPrompt.c_str());
+            ImGui::TextColored(g_theme.CmdText, "\"%s\"", m_calPrompt.c_str());
             ImGui::EndChild();
             ImGui::PopStyleColor();
 
@@ -1072,7 +1093,7 @@ void DictationApp::Render()
             }
         } else if (m_calPhase == 11) {
             // Waiting for final result
-            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Step 2 of 2: Measuring Speech Level");
+            ImGui::TextColored(g_theme.Success, "Step 2 of 2: Measuring Speech Level");
             ImGui::Spacing();
             ImGui::TextDisabled("Computing thresholds...");
             if (m_calFinishFuture.valid() &&
@@ -1089,7 +1110,7 @@ void DictationApp::Render()
             // Phase 2: Results — render live from the engine's status so the
             // numbers reflect THIS calibration run (the cached m_cal* values
             // can predate the poll thread picking up the new state)
-            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Calibration Complete!");
+            ImGui::TextColored(g_theme.Success, "Calibration Complete!");
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
@@ -1117,7 +1138,7 @@ void DictationApp::Render()
             }
         } else {
             // Error state
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Calibration Failed");
+            ImGui::TextColored(g_theme.Danger, "Calibration Failed");
             ImGui::Spacing();
             ImGui::TextWrapped("%s", m_calError.c_str());
             ImGui::Spacing();
@@ -1208,44 +1229,10 @@ void DictationApp::Render()
             }
         }
 
-        // 5b. Phase-based colors
-        ImU32 lineColor, fillColor, peakColor, glowColor;
-        if (status.phase == "recording") {
-            lineColor = IM_COL32(255, 153, 51, 230);
-            fillColor = IM_COL32(255, 153, 51, 40);
-            peakColor = IM_COL32(255, 200, 120, 140);
-            glowColor = IM_COL32(255, 153, 51, 64);
-        } else if (status.phase == "listening") {
-            lineColor = IM_COL32(77, 128, 255, 217);
-            fillColor = IM_COL32(77, 128, 255, 35);
-            peakColor = IM_COL32(140, 170, 255, 120);
-            glowColor = IM_COL32(77, 128, 255, 64);
-        } else if (status.phase == "transcribing") {
-            lineColor = IM_COL32(178, 102, 255, 180);
-            fillColor = IM_COL32(178, 102, 255, 30);
-            peakColor = IM_COL32(200, 160, 255, 120);
-            glowColor = IM_COL32(178, 102, 255, 64);
-        } else if (status.phase == "cleaning") {
-            lineColor = IM_COL32(51, 230, 230, 180);
-            fillColor = IM_COL32(51, 230, 230, 30);
-            peakColor = IM_COL32(120, 240, 240, 120);
-            glowColor = IM_COL32(51, 230, 230, 64);
-        } else if (status.phase == "typing") {
-            lineColor = IM_COL32(51, 230, 77, 180);
-            fillColor = IM_COL32(51, 230, 77, 30);
-            peakColor = IM_COL32(120, 240, 140, 120);
-            glowColor = IM_COL32(51, 230, 77, 64);
-        } else if (status.phase == "error") {
-            lineColor = IM_COL32(255, 77, 77, 180);
-            fillColor = IM_COL32(255, 77, 77, 30);
-            peakColor = IM_COL32(255, 140, 140, 120);
-            glowColor = IM_COL32(255, 77, 77, 64);
-        } else {
-            lineColor = IM_COL32(90, 90, 100, 150);
-            fillColor = IM_COL32(90, 90, 100, 25);
-            peakColor = IM_COL32(120, 120, 130, 80);
-            glowColor = IM_COL32(90, 90, 100, 40);
-        }
+        // 5b. Phase-based colors, from the active theme's phase palette
+        Theme::PhaseDraw pd = g_theme.PhaseDrawColors(status.phase);
+        ImU32 lineColor = pd.line, fillColor = pd.fill;
+        ImU32 peakColor = pd.peak, glowColor = pd.glow;
 
         // 5c. Drawing
         ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -1259,7 +1246,7 @@ void DictationApp::Render()
                         glowColor, 0.0f, 0, 2.0f);
         }
 
-        dl->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), IM_COL32(18, 18, 18, 255));
+        dl->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), g_theme.PanelBg);
 
         // Grid lines + labels (20Hz-20kHz, matching Python FFT range)
         float logMin = log10f(20.0f), logMax = log10f(20000.0f);
@@ -1272,9 +1259,9 @@ void DictationApp::Render()
         for (const auto& gl : gridLines) {
             float t = (log10f(gl.freq) - logMin) / (logMax - logMin);
             float x = pos.x + t * width;
-            dl->AddLine(ImVec2(x, pos.y), ImVec2(x, pos.y + height), IM_COL32(255, 255, 255, 15));
+            dl->AddLine(ImVec2(x, pos.y), ImVec2(x, pos.y + height), g_theme.GridLine);
             if (gl.label) {
-                dl->AddText(ImVec2(x + 2, pos.y + height - 12), IM_COL32(255, 255, 255, 40), gl.label);
+                dl->AddText(ImVec2(x + 2, pos.y + height - 12), g_theme.GridLabel, gl.label);
             }
         }
 
@@ -1311,7 +1298,7 @@ void DictationApp::Render()
             float x1 = pos.x + (float)(i + 1) / (kSpectrumBins - 1) * width;
             float y0 = pos.y + height - m_noiseFloor[i] * height * 0.9f;
             float y1 = pos.y + height - m_noiseFloor[i + 1] * height * 0.9f;
-            dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), IM_COL32(255, 255, 255, 20), 1.0f);
+            dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), g_theme.GridLine, 1.0f);
         }
 
         // Filled area
@@ -1360,7 +1347,7 @@ void DictationApp::Render()
                 const char* clipText = "CLIP";
                 ImVec2 textSize = ImGui::CalcTextSize(clipText);
                 dl->AddText(ImVec2(pos.x + width - textSize.x - 4, pos.y + 3),
-                            IM_COL32(255, 40, 40, 220), clipText);
+                            Theme::U32(g_theme.Danger, 0.86f), clipText);
             }
         }
 
@@ -1377,7 +1364,7 @@ void DictationApp::Render()
 
         // Background
         dl->AddRectFilled(vuPos, ImVec2(vuPos.x + vuWidth, vuPos.y + vuHeight),
-                          IM_COL32(18, 18, 20, 255));
+                          g_theme.PanelBg);
 
         // dBFS scale: map input_dbfs from [-80, 0] to [0, 1]
         float dbfs = m_smoothInputDbfs;
@@ -1393,20 +1380,20 @@ void DictationApp::Render()
         if (fillW > 0) {
             float gW = fminf(fillW, greenEnd);
             dl->AddRectFilled(vuPos, ImVec2(vuPos.x + gW, vuPos.y + vuHeight),
-                              IM_COL32(40, 200, 60, 220));
+                              g_theme.VuGreen);
         }
         // Yellow segment
         if (fillW > greenEnd) {
             float yW = fminf(fillW, yellowEnd);
             dl->AddRectFilled(ImVec2(vuPos.x + greenEnd, vuPos.y),
                               ImVec2(vuPos.x + yW, vuPos.y + vuHeight),
-                              IM_COL32(230, 200, 40, 220));
+                              g_theme.VuYellow);
         }
         // Red segment
         if (fillW > yellowEnd) {
             dl->AddRectFilled(ImVec2(vuPos.x + yellowEnd, vuPos.y),
                               ImVec2(vuPos.x + fillW, vuPos.y + vuHeight),
-                              IM_COL32(220, 50, 40, 220));
+                              g_theme.VuRed);
         }
 
         // Peak hold indicator (thin bright line)
@@ -1414,14 +1401,14 @@ void DictationApp::Render()
         peakT = fmaxf(0.0f, fminf(1.0f, peakT));
         float peakX = vuPos.x + peakT * vuWidth;
         dl->AddLine(ImVec2(peakX, vuPos.y), ImVec2(peakX, vuPos.y + vuHeight),
-                    IM_COL32(255, 255, 255, 180), 2.0f);
+                    g_theme.PeakLine, 2.0f);
 
         // Gate threshold marker (yellow line)
         if (status.gate.enabled) {
             float openT = (status.gate.open_threshold_dbfs + 80.0f) / 80.0f;
             float openX = vuPos.x + fmaxf(0.0f, fminf(1.0f, openT)) * vuWidth;
             dl->AddLine(ImVec2(openX, vuPos.y), ImVec2(openX, vuPos.y + vuHeight),
-                        IM_COL32(255, 220, 50, 200), 2.0f);
+                        g_theme.ThresholdStrong, 2.0f);
         }
 
         // dBFS tick marks
@@ -1430,8 +1417,8 @@ void DictationApp::Render()
         for (const auto& t : ticks) {
             float tx = vuPos.x + ((t.db + 80.0f) / 80.0f) * vuWidth;
             dl->AddLine(ImVec2(tx, vuPos.y + vuHeight - 4), ImVec2(tx, vuPos.y + vuHeight),
-                        IM_COL32(255, 255, 255, 50));
-            dl->AddText(ImVec2(tx + 2, vuPos.y + 1), IM_COL32(255, 255, 255, 60), t.label);
+                        g_theme.GridLabel);
+            dl->AddText(ImVec2(tx + 2, vuPos.y + 1), g_theme.GridLabel, t.label);
         }
 
         // dBFS value text (right-aligned)
@@ -1439,7 +1426,8 @@ void DictationApp::Render()
         snprintf(dbText, sizeof(dbText), "%.1f dBFS", dbfs);
         ImVec2 textSize = ImGui::CalcTextSize(dbText);
         dl->AddText(ImVec2(vuPos.x + vuWidth - textSize.x - 4, vuPos.y + (vuHeight - textSize.y) / 2),
-                    status.gate.gate_open ? IM_COL32(40, 220, 60, 255) : IM_COL32(200, 200, 200, 200),
+                    status.gate.gate_open ? Theme::U32(g_theme.Success)
+                                          : Theme::U32(g_theme.Text, 0.78f),
                     dbText);
 
         ImGui::Dummy(ImVec2(vuWidth, vuHeight));
@@ -1455,13 +1443,9 @@ void DictationApp::Render()
             // Header line: toggle + status
             bool gateEnabled = status.gate.enabled;
             if (gateEnabled) {
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.55f, 0.15f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.65f, 0.20f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.45f, 0.10f, 1.0f));
+                g_theme.PushSuccessButton();
             } else {
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+                g_theme.PushNeutralButton();
             }
             if (ImGui::Button(gateEnabled ? "Gate: ON" : "Gate: OFF", ImVec2(100, 22))) {
                 nlohmann::json body = {{"dsp", {{"noise_gate", {{"enabled", !gateEnabled}}}}}};
@@ -1476,9 +1460,9 @@ void DictationApp::Render()
             ImGui::Text("Input: %.1f dBFS", m_smoothInputDbfs);
             ImGui::SameLine();
             if (status.gate.gate_open) {
-                ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.3f, 1.0f), "OPEN");
+                ImGui::TextColored(g_theme.Success, "OPEN");
             } else {
-                ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "CLOSED (%.0f dB)", -status.gate.attenuation_db);
+                ImGui::TextColored(g_theme.Danger, "CLOSED (%.0f dB)", -status.gate.attenuation_db);
             }
 
             if (gateEnabled) {
@@ -1490,12 +1474,13 @@ void DictationApp::Render()
                     ImDrawList* dl = ImGui::GetWindowDrawList();
 
                     dl->AddRectFilled(barPos, ImVec2(barPos.x + barWidth, barPos.y + barHeight),
-                                      IM_COL32(30, 30, 30, 255));
+                                      g_theme.PanelInset);
 
                     // Level fill (-80..0 dBFS mapped to 0..1)
                     float levelT = (m_smoothInputDbfs - (-80.0f)) / (0.0f - (-80.0f));
                     levelT = fmaxf(0.0f, fminf(1.0f, levelT));
-                    ImU32 levelCol = status.gate.gate_open ? IM_COL32(40, 200, 60, 200) : IM_COL32(200, 60, 40, 200);
+                    ImU32 levelCol = status.gate.gate_open ? g_theme.VuGreen
+                                                           : Theme::U32(g_theme.Danger, 0.78f);
                     dl->AddRectFilled(barPos, ImVec2(barPos.x + levelT * barWidth, barPos.y + barHeight), levelCol);
 
                     // Open threshold marker (bright yellow)
@@ -1503,14 +1488,14 @@ void DictationApp::Render()
                     openT = fmaxf(0.0f, fminf(1.0f, openT));
                     float openX = barPos.x + openT * barWidth;
                     dl->AddLine(ImVec2(openX, barPos.y), ImVec2(openX, barPos.y + barHeight),
-                                IM_COL32(255, 220, 50, 220), 2.0f);
+                                g_theme.ThresholdStrong, 2.0f);
 
                     // Close threshold marker (dim yellow)
                     float closeT = (status.gate.close_threshold_dbfs - (-80.0f)) / 80.0f;
                     closeT = fmaxf(0.0f, fminf(1.0f, closeT));
                     float closeX = barPos.x + closeT * barWidth;
                     dl->AddLine(ImVec2(closeX, barPos.y), ImVec2(closeX, barPos.y + barHeight),
-                                IM_COL32(255, 220, 50, 100), 2.0f);
+                                g_theme.ThresholdWeak, 2.0f);
 
                     ImGui::Dummy(ImVec2(barWidth, barHeight));
                 }
@@ -1518,13 +1503,9 @@ void DictationApp::Render()
                 // Slider lock — a full colored button so it's actually
                 // discoverable (the old SmallButton was invisible)
                 if (m_dspLocked) {
-                    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.55f, 0.42f, 0.12f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.65f, 0.52f, 0.18f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.45f, 0.34f, 0.08f, 1.0f));
+                    g_theme.PushWarningButton();
                 } else {
-                    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.55f, 0.15f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.65f, 0.20f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.45f, 0.10f, 1.0f));
+                    g_theme.PushSuccessButton();
                 }
                 if (ImGui::Button(m_dspLocked ? "Sliders Locked  —  click to edit"
                                               : "Sliders Unlocked  —  click to lock",
@@ -1659,13 +1640,9 @@ void DictationApp::Render()
         // Record button
         bool wavActive = status.wav_recording.active;
         if (wavActive) {
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.65f, 0.08f, 0.08f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.4f, 0.05f, 0.05f, 1.0f));
+            g_theme.PushDangerButton();
         } else {
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+            g_theme.PushNeutralButton();
         }
         if (ImGui::Button(wavActive ? "Stop Rec" : "Record", ImVec2(80, 25))) {
             if (wavActive) {
@@ -1693,9 +1670,7 @@ void DictationApp::Render()
         }
 
         // Audio to Text button
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.35f, 0.55f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.20f, 0.45f, 0.65f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.10f, 0.25f, 0.45f, 1.0f));
+        g_theme.PushAccentButton();
         if (status.file_transcription.active) {
             // Job running: button becomes a way back to the (hideable) popup
             char vpLabel[48];
@@ -1783,13 +1758,13 @@ void DictationApp::Render()
             int secs = (int)status.wav_recording.seconds;
             char timer[16];
             snprintf(timer, sizeof(timer), "%02d:%02d", secs / 60, secs % 60);
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", timer);
+            ImGui::TextColored(g_theme.Danger, "%s", timer);
         }
 
         // Recorder failure (disk full, folder removed) — the engine stops the
         // recording and reports why
         if (!status.wav_recording.error.empty()) {
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+            ImGui::TextColored(g_theme.Danger,
                                "Recording failed: %s", status.wav_recording.error.c_str());
         }
 
@@ -1797,13 +1772,9 @@ void DictationApp::Render()
     {
         bool sysOn = status.system_audio_enabled;
         if (sysOn) {
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.45f, 0.30f, 0.65f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.55f, 0.40f, 0.75f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.35f, 0.20f, 0.55f, 1.0f));
+            g_theme.PushAltButton();
         } else {
-            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.25f, 0.25f, 0.25f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.35f, 0.35f, 0.35f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+            g_theme.PushNeutralButton();
         }
         if (ImGui::Button(sysOn ? "System Audio: ON" : "System Audio: OFF", ImVec2(170, 25))) {
             // Off-thread: opening the loopback stream takes seconds
@@ -1844,11 +1815,11 @@ void DictationApp::Render()
         if (status.conversation_log_active) {
             ImGui::SameLine(0, 12);
             if (status.recording) {
-                ImGui::TextColored(ImVec4(0.6f, 0.85f, 0.6f, 1.0f), "logging");
+                ImGui::TextColored(g_theme.Success, "logging");
             } else {
                 std::string hk = status.hotkey.empty() ? "F1" : status.hotkey;
                 for (auto& c : hk) c = (char)toupper((unsigned char)c);
-                ImGui::TextColored(ImVec4(0.85f, 0.75f, 0.4f, 1.0f),
+                ImGui::TextColored(g_theme.Warning,
                                    "log armed  (press %s to capture)", hk.c_str());
             }
             if (ImGui::IsItemHovered() && !status.conversation_log_path.empty())
@@ -1865,21 +1836,43 @@ void DictationApp::Render()
                  + status.latency.type_ms;
     float total_ms = status.latency.record_ms + gen_ms;
 
-    ImGui::Text("Latency");
-    ImGui::Indent(12);
-    ImGui::TextDisabled("Record:     %4.0f ms", status.latency.record_ms);
-    ImGui::TextDisabled("Transcribe: %4.0f ms", status.latency.transcribe_ms);
-    ImGui::TextDisabled("Cleanup:    %4.0f ms", status.latency.cleanup_ms);
-    ImGui::TextDisabled("Type:       %4.0f ms", status.latency.type_ms);
-    ImGui::Unindent(12);
-
     auto colorForMs = [](float ms) -> ImVec4 {
-        return (ms < 2000.0f) ? ImVec4(0.2f, 0.9f, 0.3f, 1.0f)
-             : (ms < 5000.0f) ? ImVec4(0.9f, 0.8f, 0.2f, 1.0f)
-                               : ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
+        return (ms < 2000.0f) ? g_theme.Success
+             : (ms < 5000.0f) ? g_theme.Warning
+                              : g_theme.Danger;
     };
-    ImGui::TextColored(colorForMs(gen_ms), "Generation: %.0f ms", gen_ms);
-    ImGui::TextColored(colorForMs(total_ms), "Total:      %.0f ms", total_ms);
+
+    ImGui::Text("Latency");
+    if (ImGui::BeginTable("##latency", 2,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("stage", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+        ImGui::TableSetupColumn("ms", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+
+        auto latencyRow = [](const char* label, float ms, const ImVec4* color) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            if (color) ImGui::TextColored(*color, "%s", label);
+            else       ImGui::TextDisabled("%s", label);
+            ImGui::TableNextColumn();
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.0f ms", ms);
+            // right-align within the column
+            float w = ImGui::GetContentRegionAvail().x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w - ImGui::CalcTextSize(buf).x);
+            if (color) ImGui::TextColored(*color, "%s", buf);
+            else       ImGui::TextDisabled("%s", buf);
+        };
+
+        latencyRow("Record",     status.latency.record_ms,     nullptr);
+        latencyRow("Transcribe", status.latency.transcribe_ms, nullptr);
+        latencyRow("Cleanup",    status.latency.cleanup_ms,    nullptr);
+        latencyRow("Type",       status.latency.type_ms,       nullptr);
+        ImVec4 genCol = colorForMs(gen_ms);
+        ImVec4 totCol = colorForMs(total_ms);
+        latencyRow("Generation", gen_ms,   &genCol);
+        latencyRow("Total",      total_ms, &totCol);
+        ImGui::EndTable();
+    }
     }
 
     ImGui::End();
@@ -1898,7 +1891,7 @@ void DictationApp::Render()
             ImGui::Text("Checking for updates...");
             break;
         case Updater::State::UP_TO_DATE:
-            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f),
+            ImGui::TextColored(g_theme.Success,
                                "You're up to date (v%s).", kMurmurVersion);
             break;
         case Updater::State::UPDATE_AVAILABLE: {
@@ -1915,12 +1908,11 @@ void DictationApp::Render()
                 ImGui::EndChild();
             }
             ImGui::Spacing();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.13f, 0.45f, 0.75f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.55f, 0.85f, 1.0f));
+            g_theme.PushAccentButton();
             if (ImGui::Button("Download & Install", ImVec2(160, 28))) {
                 m_updater->DownloadAndStageAsync();
             }
-            ImGui::PopStyleColor(2);
+            Theme::PopButton();
             break;
         }
         case Updater::State::DOWNLOADING:
@@ -1931,20 +1923,19 @@ void DictationApp::Render()
             ImGui::Text("Preparing update...");
             break;
         case Updater::State::READY:
-            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Update downloaded and ready.");
+            ImGui::TextColored(g_theme.Success, "Update downloaded and ready.");
             ImGui::TextWrapped("Murmur will close, install the update, and reopen automatically.");
             ImGui::Spacing();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.15f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.65f, 0.20f, 1.0f));
+            g_theme.PushSuccessButton();
             if (ImGui::Button("Restart && Update", ImVec2(160, 28))) {
                 if (m_updater->LaunchApplyAndQuit()) {
                     m_requestQuit = true;
                 }
             }
-            ImGui::PopStyleColor(2);
+            Theme::PopButton();
             break;
         case Updater::State::FAILED:
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", m_updater->Error().c_str());
+            ImGui::TextColored(g_theme.Danger, "%s", m_updater->Error().c_str());
             ImGui::Spacing();
             if (ImGui::Button("Retry", ImVec2(100, 0))) {
                 m_updater->CheckAsync();
@@ -1983,10 +1974,10 @@ void DictationApp::Render()
         ImGui::SetWindowSize(ImVec2(620, 560), ImGuiCond_Always);
 
         // Accent color used for section headers and highlights
-        const ImVec4 accent(0.24f, 0.78f, 0.78f, 1.0f);     // teal/cyan
-        const ImVec4 accentDim(0.24f, 0.60f, 0.60f, 1.0f);
-        const ImVec4 cmdColor(0.95f, 0.75f, 0.30f, 1.0f);   // warm gold for commands
-        const ImVec4 muted(0.50f, 0.52f, 0.55f, 1.0f);
+        const ImVec4 accent    = g_theme.Accent;
+        const ImVec4 accentDim = g_theme.AccentDim;
+        const ImVec4 cmdColor  = g_theme.CmdText;
+        const ImVec4 muted     = g_theme.TextDim;
 
         // Title
         ImGui::TextColored(accent, "Murmur");
@@ -2160,15 +2151,15 @@ void DictationApp::Render()
         ImGui::Spacing();
         ImGui::Indent(8);
 
-        ImGui::TextColored(ImVec4(0.9f, 0.5f, 0.5f, 1.0f), "Engine disconnected?");
+        ImGui::TextColored(g_theme.Danger, "Engine disconnected?");
         ImGui::SameLine();
         ImGui::TextWrapped("Click File > Restart Engine.");
 
-        ImGui::TextColored(ImVec4(0.9f, 0.5f, 0.5f, 1.0f), "LLM not working?");
+        ImGui::TextColored(g_theme.Danger, "LLM not working?");
         ImGui::SameLine();
         ImGui::TextWrapped("Make sure LM Studio is running with a model loaded.");
 
-        ImGui::TextColored(ImVec4(0.9f, 0.5f, 0.5f, 1.0f), "No audio?");
+        ImGui::TextColored(g_theme.Danger, "No audio?");
         ImGui::SameLine();
         ImGui::TextWrapped("Check Edit > Microphone and select the correct input device.");
 
@@ -2192,7 +2183,7 @@ void DictationApp::Render()
         m_showAbout = false;
     }
     if (ImGui::BeginPopupModal("About Murmur##modal", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        const ImVec4 accent(0.24f, 0.78f, 0.78f, 1.0f);
+        const ImVec4 accent = g_theme.Accent;
 
         ImGui::TextColored(accent, "Murmur");
         ImGui::SameLine();
@@ -2206,7 +2197,7 @@ void DictationApp::Render()
         if (status.connected) {
             ImGui::Text("v%s", status.version.c_str());
         } else {
-            ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.4f, 1.0f), "not connected");
+            ImGui::TextColored(g_theme.Danger, "not connected");
         }
 
         ImGui::TextDisabled("Hotkey");
